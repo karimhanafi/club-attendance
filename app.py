@@ -229,25 +229,72 @@ else:
                 finally:
                     conn.close()
 
-   {
+    # --- 2. شاشة الإداري ---
+    elif user['Role'] == 'Admin':
+        st.header("🛡️ لوحة تحكم ومراقبة الإداريين")
+        
+        tab1, tab2, tab3 = st.tabs(["📁 تسجيل الإجازات الرسمية", "🔄 مراجعة وتعديل غياب يوم سابق", "📊 التزام المدربين"])
+        
+        conn = get_db_connection()
+        
+        with tab1:
+            st.subheader("تسجيل إجازة/عذر رسمي للاعب بناءً على مستندات")
+            all_players = [dict(row) for row in conn.execute("SELECT * FROM Players").fetchall()]
+            
+            if not all_players:
+                st.warning("لا يوجد لاعبين مسجلين في النظام حالياً.")
+            else:
+                selected_p = st.selectbox(
+                    "اختر اللاعب:", 
+                    all_players, 
+                    format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']}"
+                )
+            
+                col_s, col_e = st.columns(2)
+                with col_s:
+                    start_d = st.date_input("بداية الإجازة", date.today(), key="exc_start")
+                with col_e:
+                    end_d = st.date_input("نهاية الإجازة", date.today(), key="exc_end")
+                    
+                exc_reason = st.selectbox("سبب الإجازة القانوني:", ["إصابة", "سفر", "امتحانات"])
+                
+                if st.button("تسجيل واعتماد الإجازة رسمياً"):
+                    if start_d > end_d:
+                        st.error("تاريخ البداية لا يمكن أن يكون بعد تاريخ النهاية!")
+                    else:
+                        conn.execute('''
+                            INSERT INTO Excuses_Log (Player_ID, Start_Date, End_Date, Reason, Registered_By)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (selected_p['Player_ID'], str(start_d), str(end_d), exc_reason, user['Username']))
+                        conn.commit()
+                        st.success(f"✔️ تم اعتماد إجازة اللاعب بنجاح!")
+                        st.rerun()
+                    
         with tab2:
             st.subheader("تعديل وتصحيح أخطاء المدربين")
             target_date = st.date_input("اختر التاريخ للتعديل", date.today())
             
-            records = conn.execute('''
+            records_raw = conn.execute('''
                 SELECT a.Record_ID, a.Date, a.Status, a.Submitted_By, p.Player_Name, p.Team_Age 
                 FROM Attendance a
                 JOIN Players p ON a.Player_ID = p.Player_ID
                 WHERE a.Date = ?
             ''', (str(target_date),)).fetchall()
             
-            if not records:
+            if not records_raw:
                 st.warning("لا توجد بيانات مسجلة في هذا التاريخ حتى الآن.")
             else:
-                df_records = pd.DataFrame([dict(r) for r in records])
+                records_list = [dict(r) for r in records_raw]
+                
+                df_records = pd.DataFrame(records_list)
                 st.dataframe(df_records[['Team_Age', 'Player_Name', 'Status', 'Submitted_By']], use_container_width=True)
                 
-                record_to_edit = st.selectbox("اختر السجل المراد تعديله:", records, format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']} (الحالي: {x['Status']})")
+                record_to_edit = st.selectbox(
+                    "اختر السجل المراد تعديله:", 
+                    records_list, 
+                    format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']} (الحالي: {x['Status']})"
+                )
+                
                 new_status = st.selectbox("الحالة الجديدة المعدلة:", ["Present", "Absent", "Excused"])
                 
                 if st.button("تحديث السجل وتوثيقه في الرقابة"):
@@ -261,7 +308,7 @@ else:
                             VALUES (?, ?, ?, ?, ?)
                         ''', (record_to_edit['Record_ID'], record_to_edit['Status'], new_status, user['Username'], now_ts))
                         conn.commit()
-                        st.success("✔️ تم التعديل وتوثيق الحركة في سجل الرقابة التامة.")
+                        st.success("✔️ تم التعديل وتوثيق الحركة.")
                         st.rerun()
                         
         with tab3:
