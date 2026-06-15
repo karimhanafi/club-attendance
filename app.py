@@ -229,39 +229,7 @@ else:
                 finally:
                     conn.close()
 
-    # --- 2. شاشة الإداري ---
-    elif user['Role'] == 'Admin':
-        st.header("🛡️ لوحة تحكم ومراقبة الإداريين")
-        
-        tab1, tab2, tab3 = st.tabs(["📁 تسجيل الإجازات الرسمية", "🔄 مراجعة وتعديل غياب يوم سابق", "📊 التزام المدربين"])
-        
-        conn = get_db_connection()
-        
-        with tab1:
-            st.subheader("تسجيل إجازة/عذر رسمي للاعب بناءً على مستندات")
-            all_players = conn.execute("SELECT * FROM Players").fetchall()
-            selected_p = st.selectbox("اختر اللاعب:", all_players, format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']}")
-            
-            col_s, col_e = st.columns(2)
-            with col_s:
-                start_d = st.date_input("بداية الإجازة", date.today(), key="exc_start")
-            with col_e:
-                end_d = st.date_input("نهاية الإجازة", date.today(), key="exc_end")
-                
-            exc_reason = st.selectbox("سبب الإجازة القانوني:", ["إصابة", "سفر", "امتحانات"])
-            
-            if st.button("تسجيل واعتماد الإجازة رسمياً"):
-                if start_d > end_d:
-                    st.error("تاريخ البداية لا يمكن أن يكون بعد تاريخ النهاية!")
-                else:
-                    conn.execute('''
-                        INSERT INTO Excuses_Log (Player_ID, Start_Date, End_Date, Reason, Registered_By)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (selected_p['Player_ID'], str(start_d), str(end_d), exc_reason, user['Username']))
-                    conn.commit()
-                    st.success(f"✔️ تم اعتماد إجازة اللاعب {selected_p['Player_Name']} بنجاح وتطبيقها تلقائياً بالسيستم!")
-                    st.rerun()
-                    
+   {
         with tab2:
             st.subheader("تعديل وتصحيح أخطاء المدربين")
             target_date = st.date_input("اختر التاريخ للتعديل", date.today())
