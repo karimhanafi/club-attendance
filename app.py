@@ -6,7 +6,7 @@ import pandas as pd
 import os
 import shutil
 
-DB_FILE = "club_attendance.db"
+DB_FILE = "club_attendance_v2.db"
 BACKUP_DIR = "backups"
 
 # --- 1. نظام النسخ الاحتياطي التلقائي ---
