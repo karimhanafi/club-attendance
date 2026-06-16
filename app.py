@@ -374,16 +374,25 @@ else:
             with col_b:
                 st.markdown("### ✏️ تعديل / حذف حساب حالي")
                 user_to_mod = st.selectbox("اختر الحساب المراد تعديله أو حذفه:", [dict(u) for u in current_users], format_func=lambda x: f"{x['Full_Name']} ({x['Username']})")
-                mod_pass = st.text_input("تعديل كلمة المرور:", value=user_to_mod['Password'])
+                
+                # إضافة خانة لتعديل اسم المستخدم (Username) نفسه
+                mod_username = st.text_input("تعديل اسم المستخدم (Username):", value=user_to_mod['Username'])
+                mod_pass = st.text_input("تعديل كلمة المرور (Password):", value=user_to_mod['Password'])
                 mod_name = st.text_input("تعديل الاسم بالكامل:", value=user_to_mod['Full_Name'])
                 mod_teams = st.text_input("تعديل الفرق المشرف عليها:", value=user_to_mod['Assigned_Teams'] if user_to_mod['Assigned_Teams'] else "")
                 
                 col_b1, col_b2 = st.columns(2)
                 if col_b1.button("💾 حفظ التعديلات الإدارية", use_container_width=True):
-                    conn.execute("UPDATE Users SET Password = ?, Full_Name = ?, Assigned_Teams = ? WHERE User_ID = ?", (mod_pass, mod_name, mod_teams, user_to_mod['User_ID']))
-                    conn.commit()
-                    st.success("تم التحديث!")
-                    st.rerun()
+                    try:
+                        # تحديث قاعدة البيانات باسم المستخدم الجديد وكل البيانات الأخرى
+                        conn.execute("UPDATE Users SET Username = ?, Password = ?, Full_Name = ?, Assigned_Teams = ? WHERE User_ID = ?", 
+                                     (mod_username, mod_pass, mod_name, mod_teams, user_to_mod['User_ID']))
+                        conn.commit()
+                        st.success("✔️ تم تحديث حساب المستخدم واسم الدخول بنجاح!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ خطأ: اسم المستخدم الجديد مستخدم بالفعل من قبل حساب آخر!")
+                        
                 if col_b2.button("❌ حذف الحساب نهائياً", use_container_width=True):
                     if user_to_mod['Username'] == 'super_admin':
                         st.error("لا يمكنك حذف الحساب الرئيسي للنظام!")
