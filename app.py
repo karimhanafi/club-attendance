@@ -29,6 +29,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute("PRAGMA foreign_keys = ON;")
     
+    # جدول المستخدمين
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Users (
             User_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +41,7 @@ def init_db():
         )
     ''')
     
+    # جدول اللاعبين
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Players (
             Player_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,12 +51,13 @@ def init_db():
         )
     ''')
     
+    # جدول الحضور والغياب اليومي
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Attendance (
             Record_ID INTEGER PRIMARY KEY AUTOINCREMENT,
             Date TEXT NOT NULL,
             Player_ID INTEGER,
-            Status TEXT CHECK(Status IN ('Present', 'Absent', 'Excused')) NOT NULL,
+            Status TEXT CHECK(Status IN ('Present', 'Absent', 'Excused', 'GlobalHoliday')) NOT NULL,
             Excuse_Reason TEXT,
             Submitted_By TEXT NOT NULL,
             Timestamp TEXT NOT NULL,
@@ -63,6 +66,7 @@ def init_db():
         )
     ''')
     
+    # جدول الإجازات الرسمية المسجلة بالأوراق والمستندات (تم إضافة عمود Document_Link)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Excuses_Log (
             Excuse_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,11 +74,24 @@ def init_db():
             Start_Date TEXT NOT NULL,
             End_Date TEXT NOT NULL,
             Reason TEXT CHECK(Reason IN ('إصابة', 'سفر', 'امتحانات')) NOT NULL,
+            Document_Link TEXT, -- رابط مستند الإجازة على جوجل درايف
             Registered_By TEXT NOT NULL,
             FOREIGN KEY (Player_ID) REFERENCES Players(Player_ID)
         )
     ''')
     
+    # جدول الإجازات العامة للنادي (جديد)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Global_Holidays (
+            Holiday_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            Holiday_Name TEXT NOT NULL,
+            Start_Date TEXT NOT NULL,
+            End_Date TEXT NOT NULL,
+            Registered_By TEXT NOT NULL
+        )
+    ''')
+    
+    # جدول الرقابة
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Audit_Log (
             Log_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,85 +161,99 @@ else:
         st.header("📋 شاشة المدرب لتسجيل الحضور اليومي")
         st.info(f"📅 تاريخ اليوم التلقائي: {today_str}")
         
-        teams_allowed = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
+        conn = get_db_connection()
+        # فحص هل اليوم هو إجازة رسمية عامة للنادي؟
+        global_holiday = conn.execute('SELECT Holiday_Name FROM Global_Holidays WHERE ? BETWEEN Start_Date AND End_Date', (today_str,)).fetchone()
         
-        if not teams_allowed:
-            st.warning("لم يتم ربط أي فرق بحسابك حالياً. راجع مدير النظام.")
+        if global_holiday:
+            st.warning(f"🥳 كابتن، اليوم هو إجازة رسمية عامة في النادي بمناسبة: ({global_holiday['Holiday_Name']}). السيستم مغلق تلقائياً اليوم.")
+            conn.close()
         else:
-            selected_team = st.selectbox("اختر الفريق المراد تسجيل حضوره الآن:", teams_allowed)
+            teams_allowed = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
             
-            conn = get_db_connection()
-            players = conn.execute("SELECT * FROM Players WHERE Team_Age = ?", (selected_team,)).fetchall()
-            
-            player_ids = [p['Player_ID'] for p in players]
-            already_submitted = False
-            if player_ids:
-                placeholders = ','.join('?' for _ in player_ids)
-                check_exist = conn.execute(f"SELECT COUNT(*) FROM Attendance WHERE Date = ? AND Player_ID IN ({placeholders})", [today_str] + player_ids).fetchone()[0]
-                if check_exist > 0:
-                    already_submitted = True
-            
-            if already_submitted:
-                st.error("⚠️ تم تسجيل حضور هذا الفريق اليوم بالفعل! لمنع التكرار لا يمكنك الإدخال مجدداً.")
+            if not teams_allowed:
+                st.warning("لم يتم ربط أي فرق بحسابك حالياً. راجع مدير النظام.")
                 conn.close()
             else:
-                st.write("علّم على اللاعبين الحاضرين في تمرين اليوم:")
-                attendance_dict = {}
+                selected_team = st.selectbox("اختر الفريق المراد تسجيل حضوره الآن:", teams_allowed)
+                players = conn.execute("SELECT * FROM Players WHERE Team_Age = ?", (selected_team,)).fetchall()
                 
-                for p in players:
-                    col_name, col_status = st.columns([3, 1])
-                    with col_name:
-                        excuse = conn.execute('SELECT Reason FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p['Player_ID'], today_str)).fetchone()
-                        if excuse:
-                            st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} )*")
-                        else:
-                            st.write(f"🔹 {p['Player_Name']}")
-                    with col_status:
-                        is_present = st.checkbox("حاضر", key=f"p_{p['Player_ID']}")
-                        attendance_dict[p['Player_ID']] = "Present" if is_present else "Absent"
+                player_ids = [p['Player_ID'] for p in players]
+                already_submitted = False
+                if player_ids:
+                    placeholders = ','.join('?' for _ in player_ids)
+                    check_exist = conn.execute(f"SELECT COUNT(*) FROM Attendance WHERE Date = ? AND Player_ID IN ({placeholders})", [today_str] + player_ids).fetchone()[0]
+                    if check_exist > 0:
+                        already_submitted = True
                 
-                if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
-                    now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    try:
-                        for p_id, status in attendance_dict.items():
-                            final_status = status
-                            reason_str = None
-                            if status == "Absent":
-                                excuse = conn.execute('SELECT Reason FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p_id, today_str)).fetchone()
-                                if excuse:
-                                    final_status = "Excused"
-                                    reason_str = f"إجازة: {excuse['Reason']}"
-                            
-                            conn.execute('INSERT INTO Attendance (Date, Player_ID, Status, Excuse_Reason, Submitted_By, Timestamp) VALUES (?, ?, ?, ?, ?, ?)', (today_str, p_id, final_status, reason_str, user['Username'], now_ts))
-                        conn.commit()
-                        st.success("✔️ تم حفظ وإرسال حضور الفريق بنجاح!")
-                        st.balloons()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"خطأ أثناء الحفظ: {e}")
-                    finally:
-                        conn.close()
+                if already_submitted:
+                    st.error("⚠️ تم تسجيل حضور هذا الفريق اليوم بالفعل! لمنع التكرار لا يمكنك الإدخال مجدداً.")
+                    conn.close()
+                else:
+                    st.write("علّم على اللاعبين الحاضرين في تمرين اليوم:")
+                    attendance_dict = {}
+                    
+                    for p in players:
+                        col_name, col_status = st.columns([3, 1])
+                        with col_name:
+                            excuse = conn.execute('SELECT Reason, Document_Link FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p['Player_ID'], today_str)).fetchone()
+                            if excuse:
+                                if excuse['Document_Link']:
+                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} - [📄 عرض المستند]({excuse['Document_Link']}) )*")
+                                else:
+                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} )*")
+                            else:
+                                st.write(f"🔹 {p['Player_Name']}")
+                        with col_status:
+                            is_present = st.checkbox("حاضر", key=f"p_{p['Player_ID']}")
+                            attendance_dict[p['Player_ID']] = "Present" if is_present else "Absent"
+                    
+                    if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
+                        now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            for p_id, status in attendance_dict.items():
+                                final_status = status
+                                reason_str = None
+                                if status == "Absent":
+                                    excuse = conn.execute('SELECT Reason FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p_id, today_str)).fetchone()
+                                    if excuse:
+                                        final_status = "Excused"
+                                        reason_str = f"إجازة: {excuse['Reason']}"
+                                
+                                conn.execute('INSERT INTO Attendance (Date, Player_ID, Status, Excuse_Reason, Submitted_By, Timestamp) VALUES (?, ?, ?, ?, ?, ?)', (today_str, p_id, final_status, reason_str, user['Username'], now_ts))
+                            conn.commit()
+                            st.success("✔️ تم حفظ وإرسال حضور الفريق بنجاح!")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"خطأ أثناء الحفظ: {e}")
+                        finally:
+                            conn.close()
 
-    # --- 2. شاشة الإداري المخصصة والمحكومة بالفرق (Admin) ---
+    # --- 2. شاشة الإداري المخصصة (Admin) ---
     elif user['Role'] == 'Admin':
         st.header("🛡️ لوحة تحكم ومراقبة الإداريين")
         
-        # استخراج الفرق المخصصة للإداري الحالي فقط
         admin_teams = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
         
         if not admin_teams:
-            st.warning("⚠️ لم يتم ربط أي فرق بحسابك الإداري حالياً. يرجى مراجعة الـ Super Admin لتحديد فرقك.")
+            st.warning("⚠️ لم يتم ربط أي فرق بحسابك الإداري حالياً. يرجى مراجعة الـ Super Admin.")
         else:
-            # تحويل قائمة الفرق لشكل مناسب للاستعلام في قاعدة البيانات
             team_placeholders = ','.join('?' for _ in admin_teams)
             
-            tab1, tab2, tab3, tab4 = st.tabs(["📁 تسجيل إجازة رسمية", "🔄 مراجعة وتصحيح أخطاء الغياب", "📝 إدخال غياب يدوي (بديل للمدرب)", "📊 كشف التزام المدربين"])
+            tab1, tab1_b, tab2, tab3, tab4 = st.tabs([
+                "📁 تسجيل إجازة لاعب ومستندها", 
+                "🗓️ تسجيل إجازة عامة للنادي",
+                "🔄 مراجعة وتصحيح أخطاء الغياب", 
+                "📝 إدخال غياب يدوي (بديل للمدرب)", 
+                "📊 كشف التزام المدربين"
+            ])
             
             conn = get_db_connection()
             
-            # تبويب 1: تسجيل الإجازات (يظهر فقط لاعبي فرقه المخصصة)
+            # تبويب 1: تسجيل إجازات اللاعبين مع رابط المستند
             with tab1:
-                st.subheader("تسجيل إجازة معتمدة بمستندات (لفرقك المخصصة فقط)")
+                st.subheader("تسجيل إجازة معتمدة بمستندات (مرضي / سفر / امتحانات)")
                 all_players = [dict(row) for row in conn.execute(f"SELECT * FROM Players WHERE Team_Age IN ({team_placeholders})", admin_teams).fetchall()]
                 
                 if not all_players:
@@ -233,15 +264,42 @@ else:
                     start_d = col_s.date_input("بداية الإجازة", date.today(), key="admin_s")
                     end_d = col_e.date_input("نهاية الإجازة", date.today(), key="admin_e")
                     exc_reason = st.selectbox("السبب:", ["إصابة", "سفر", "امتحانات"])
-                    if st.button("اعتماد الإجازة"):
-                        conn.execute('INSERT INTO Excuses_Log (Player_ID, Start_Date, End_Date, Reason, Registered_By) VALUES (?, ?, ?, ?, ?)', (selected_p['Player_ID'], str(start_d), str(end_d), exc_reason, user['Username']))
+                    
+                    # الخانة الجديدة لتوثيق الأوراق عبر جوجل درايف
+                    doc_link = st.text_input("رابط صور المستند أو الشهادة الطبية (من Google Drive):", placeholder="https://drive.google.com/...")
+                    
+                    if st.button("اعتماد إجازة اللاعب ومستندها"):
+                        conn.execute('''
+                            INSERT INTO Excuses_Log (Player_ID, Start_Date, End_Date, Reason, Document_Link, Registered_By) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (selected_p['Player_ID'], str(start_d), str(end_d), exc_reason, doc_link, user['Username']))
                         conn.commit()
-                        st.success("✔️ تم الحفظ بنجاح.")
+                        st.success("✔️ تم اعتماد وحفظ الإجازة والمستند الرسمي أوتوماتيكياً بالسيستم!")
                         st.rerun()
                         
-            # تبويب 2: تعديل غياب (يعدل فقط لفرق مخصصة له)
+            # تبويب 1 مكرر: تسجيل الإجازات العامة للنادي (أعياد / تدريبية)
+            with tab1_b:
+                st.subheader("🗓️ تسجيل إجازة عامة للنادي (أعياد / إجازة تدريبية / مناسبات)")
+                h_name = st.text_input("اسم المناسبة أو الإجازة (مثل: إجازة عيد الأضحى، أعمال صيانة بالنادي)")
+                col_hs, col_he = st.columns(2)
+                h_start = col_hs.date_input("تاريخ بداية الإجازة العامة", date.today())
+                h_end = col_he.date_input("تاريخ نهاية الإجازة العامة", date.today())
+                
+                if st.button("📢 اعتماد وإعلان الإجازة العامة للنادي"):
+                    if h_name:
+                        conn.execute('''
+                            INSERT INTO Global_Holidays (Holiday_Name, Start_Date, End_Date, Registered_By)
+                            VALUES (?, ?, ?, ?)
+                        ''', (h_name, str(h_start), str(h_end), user['Username']))
+                        conn.commit()
+                        st.success(f"✔️ تم تسجيل إجازة ({h_name}) بنجاح، وسيتم إغلاق السيستم للمدربين تلقائياً في هذه الفترة.")
+                        st.rerun()
+                    else:
+                        st.error("يرجى كتابة اسم المناسبة!")
+                        
+            # تبويب 2: تعديل غياب
             with tab2:
-                st.subheader("تعديل غياب أخطأ فيه مدرب (لفرقك المخصصة فقط)")
+                st.subheader("تعديل غياب أخطأ فيه مدرب")
                 t_date = st.date_input("اختر التاريخ", date.today())
                 records = conn.execute(f'''
                     SELECT a.Record_ID, a.Status, a.Submitted_By, p.Player_Name, p.Team_Age 
@@ -265,9 +323,9 @@ else:
                 else:
                     st.warning("لا توجد بيانات مسجلة لفرقك المخصصة في هذا التاريخ.")
                     
-            # تبويب 3: إدخال ورقي بديل للمدرب (يختار فقط من فرقه)
+            # تبويب 3: غياب ورقي بديل
             with tab3:
-                st.subheader("تسجيل غياب وحضور نيابة عن المدرب (لفرقك المخصصة فقط)")
+                st.subheader("تسجيل غياب وحضور نيابة عن المدرب")
                 p_date = st.date_input("تاريخ الحصة التدريبية", date.today(), key="admin_p_date")
                 sel_team = st.selectbox("اختر الفريق المراد الإدخال له:", admin_teams)
                 
@@ -295,7 +353,7 @@ else:
                         st.success("✔️ تم حفظ الكشف بنجاح.")
                         st.rerun()
                             
-            # تبويب 4: كشف الالتزام (يتابع فقط فرقه المخصصة)
+            # تبويب 4: كشف الالتزام
             with tab4:
                 st.subheader("👀 من من مدربي فرقك المخصصة لم يسجل الحضور اليوم؟")
                 check_d = st.date_input("اختر تاريخ المتابعة", date.today(), key="admin_check_d")
@@ -315,7 +373,7 @@ else:
         st.header("🏆 لوحة التحكم المطلقة لمدير النظام ورئيس الجهاز")
         
         menu = st.sidebar.radio("🗂️ اختر قسم التحكم الإداري:", [
-            "📊 التقارير الختامية والأكسيل", 
+            "📊 التقارير الختامية والأكسيل وثائق الأعذار", 
             "👥 إدارة حسابات المستخدمين والكلمات السرية", 
             "🏃 إدارة قوائم اللاعبين والفرق",
             "🛡️ التحكم الشامل وحذف/تعديل الداتا"
@@ -323,8 +381,8 @@ else:
         
         conn = get_db_connection()
         
-        if menu == "📊 التقارير الختامية والأكسيل":
-            st.subheader("إحصائيات ونسب الحضور التراكمية للموسم")
+        if menu == "📊 التقارير الختامية والأكسيل وثائق الأعذار":
+            st.subheader("إحصائيات ونسب الحضور التراكمية للموسم ومراجعة التقارير الطبية")
             teams_list = ['الكل'] + [r['Team_Age'] for r in conn.execute("SELECT DISTINCT Team_Age FROM Players").fetchall()]
             sel_t = st.selectbox("تصفية التقرير حسب الفريق:", teams_list)
             
@@ -335,17 +393,29 @@ else:
             
             rep = conn.execute(query).fetchall()
             if rep:
-                df = pd.DataFrame([dict(r) for r in rep])
+                df_list = []
+                for r in rep:
+                    d = dict(r)
+                    # البحث عن آخر مستند إجازة مرفع للاعب ده عشان يظهر لرئيس الجهاز
+                    last_doc = conn.execute('SELECT Reason, Document_Link FROM Excuses_Log WHERE Player_ID = ? ORDER BY Excuse_ID DESC LIMIT 1', (d['Player_ID'],)).fetchone()
+                    if last_doc and last_doc['Document_Link']:
+                        d['المستند الرسمي الموثق'] = f"[{last_doc['Reason']}]({last_doc['Document_Link']})"
+                    else:
+                        d['المستند الرسمي الموثق'] = "لا يوجد مستندات مرفوعة"
+                    df_list.append(d)
+                
+                df = pd.DataFrame(df_list)
                 df['نسبة الحضور (%)'] = df.apply(lambda r: round((r['present_days'] / r['total_sessions'] * 100), 1) if r['total_sessions'] > 0 else 0.0, axis=1)
-                df.columns = ['ID اللاعب', 'اسم اللاعب', 'المرحلة السنية', 'إجمالي الحصص', 'أيام الحضور', 'أيام الغياب', 'أيام الغياب بعذر', 'نسبة الحضور (%)']
-                st.dataframe(df, use_container_width=True)
+                
+                # إعادة الترتيب والعرض
+                st.write("💡 *نصيحة: يمكنك الضغط على أي رابط يظهر في عمود المستند لفتح التقرير الطبي أو تذكرة السفر فوراً من جوجل درايف!*")
+                st.dataframe(df[['Player_Name', 'Team_Age', 'total_sessions', 'present_days', 'absent_days', 'excused_days', 'المستند الرسمي الموثق', 'نسبة الحضور (%)']], use_container_width=True)
                 st.download_button("📥 تحميل التقرير الشامل كملف Excel/CSV", df.to_csv(index=False).encode('utf-8-sig'), "Full_Club_Report.csv", "text/csv", use_container_width=True)
             else:
                 st.info("لا توجد بيانات حضور مسجلة حتى الآن.")
                 
         elif menu == "👥 إدارة حسابات المستخدمين والكلمات السرية":
             st.subheader("إضافة وتعديل حسابات المدربين والإداريين")
-            
             current_users = conn.execute("SELECT User_ID, Username, Password, Full_Name, Role, Assigned_Teams FROM Users").fetchall()
             st.write("👥 **المستخدمين الحاليين بالنظام:**")
             st.dataframe(pd.DataFrame([dict(u) for u in current_users]), use_container_width=True)
@@ -354,7 +424,7 @@ else:
             col_a, col_b = st.columns(2)
             
             with col_a:
-                st.markdown("### ➕ إضافة مستخدم جديد (مدرب أو إداري)")
+                st.markdown("### ➕ إضافة مستخدم جديد")
                 new_user = st.text_input("اسم المستخدم (Username بالإنجليزية)")
                 new_pass = st.text_input("كلمة المرور (Password)")
                 new_name = st.text_input("الاسم بالكامل الثلاثي")
