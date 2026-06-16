@@ -119,7 +119,7 @@ if "logged_in" not in st.session_state:
 
 # --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
-    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الغياب والمتابعة لفرق النادي</h2>", unsafe_allow_html=True)
     st.write("---")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -192,7 +192,7 @@ else:
                         is_present = st.checkbox("حاضر", key=f"p_{p['Player_ID']}")
                         attendance_dict[p['Player_ID']] = "Present" if is_present else "Absent"
                 
-                if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
+                if st.button("💾 حفظ وإرسال الغياب للإدارة", type="primary"):
                     now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     try:
                         for p_id, status in attendance_dict.items():
