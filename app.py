@@ -113,7 +113,7 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
+st.set_page_config(page_title="نظام الغياب لفرق الكرة الطائرة", layout="wide")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -121,7 +121,7 @@ if "logged_in" not in st.session_state:
 
 # --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
-    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الغياب والمتابعة لفرق الكرة الطائرة hg</h2>", unsafe_allow_html=True)
     st.write("---")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
