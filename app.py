@@ -103,7 +103,7 @@ def init_db():
     if cursor.execute("SELECT COUNT(*) FROM Users").fetchone()[0] == 0:
         cursor.execute('''
             INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams)
-            VALUES ('super_admin', '789', 'مدير النظام الرئيسي', 'SuperAdmin', 'الكل')
+            VALUES ('admin', '1585', ' النظام الرئيسي', 'SuperAdmin', 'الكل')
         ''')
     conn.commit()
     conn.close()
