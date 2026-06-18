@@ -6,8 +6,8 @@ import pandas as pd
 import os
 import shutil
 
-# استخدام v4 لإنشاء الهيكل الجديد المحدد لكل فرقة لمنع التداخل
-DB_FILE = "club_attendance_v4.db"
+# استخدام v5 لإنشاء الهيكل المحدث الذي يدعم إدارة وإلغاء الإجازات المخطوءة
+DB_FILE = "club_attendance_v5.db"
 BACKUP_DIR = "backups"
 
 # --- 1. نظام النسخ الاحتياطي التلقائي ---
@@ -77,14 +77,13 @@ def init_db():
         )
     ''')
     
-    # تحديث جدول الإجازات ليشمل الفريق المستهدف أو النادي بالكامل
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Global_Holidays (
             Holiday_ID INTEGER PRIMARY KEY AUTOINCREMENT,
             Holiday_Name TEXT NOT NULL,
             Start_Date TEXT NOT NULL,
             End_Date TEXT NOT NULL,
-            Target_Team TEXT NOT NULL, -- اسم الفرقة المحددة أو "كل الفرق"
+            Target_Team TEXT NOT NULL,
             Registered_By TEXT NOT NULL
         )
     ''')
@@ -104,7 +103,7 @@ def init_db():
     if cursor.execute("SELECT COUNT(*) FROM Users").fetchone()[0] == 0:
         cursor.execute('''
             INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams)
-            VALUES ('admin', '1585', 'النظام الرئيسي', 'SuperAdmin', 'الكل')
+            VALUES ('super_admin', '789', 'مدير النظام الرئيسي', 'SuperAdmin', 'الكل')
         ''')
     conn.commit()
     conn.close()
@@ -116,7 +115,7 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-st.set_page_config(page_title="نظام الغياب لفرق الميني و البراعم للكرة الطائرة", layout="wide")
+st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -124,14 +123,14 @@ if "logged_in" not in st.session_state:
 
 # --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
-    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الغياب لفرق الميني و البراعم للكرة الطائرة</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
     st.write("---")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.subheader("🔑 سجل الغياب يا ابو الكباتن")
-        username = st.text_input("متكتب الاسم عشان افتح")
-        password = st.text_input("ايه كلمة السر", type="password")
-        if st.button("افتح يا سمسم", use_container_width=True):
+        st.subheader("🔑 تسجيل الدخول")
+        username = st.text_input("اسم المستخدم")
+        password = st.text_input("كلمة المرور", type="password")
+        if st.button("دخول", use_container_width=True):
             conn = get_db_connection()
             user = conn.execute("SELECT * FROM Users WHERE Username = ? AND Password = ?", (username, password)).fetchone()
             conn.close()
@@ -140,13 +139,13 @@ if not st.session_state.logged_in:
                 st.session_state.user = dict(user)
                 st.rerun()
             else:
-                st.error("الاسم او كلمة السر مش صح ")
+                st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
 else:
     user = st.session_state.user
     st.sidebar.title(f"👋 {user['Full_Name']}")
     st.sidebar.info(f"المنصب: {user['Role']}")
     
-    if st.sidebar.button("🚪 عملنا شغلنا خرجنا", use_container_width=True):
+    if st.sidebar.button("🚪 تسجيل الخروج", use_container_width=True):
         st.session_state.logged_in = False
         st.session_state.user = None
         st.rerun()
@@ -155,18 +154,17 @@ else:
 
     # --- 1. شاشة المدرب (Coach) ---
     if user['Role'] == 'Coach':
-        st.header("📋 مكان المدرب الجامد عشان الغياب")
-        st.info(f"📅 التاريخ بقى توماتيكي : {today_str}")
+        st.header("📋 شاشة المدرب لتسجيل الحضور اليومي")
+        st.info(f"📅 تاريخ اليوم التلقائي: {today_str}")
         
         teams_allowed = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
         
         if not teams_allowed:
-            st.warning("مفيش فرق معاك دلوقتي - كلم كابتن كريم ")
+            st.warning("لم يتم ربط أي فرق بحسابك حالياً. راجع مدير النظام.")
         else:
-            selected_team = st.selectbox("ايه الفريق اللي عايز تسجله:", teams_allowed)
+            selected_team = st.selectbox("اختر الفريق المراد تسجيل حضوره الآن:", teams_allowed)
             
             conn = get_db_connection()
-            # فحص ذكي: هل اليوم إجازة خاصة بالفريق ده تحديداً أو إجازة لكل الفرق؟
             holiday_check = conn.execute('''
                 SELECT Holiday_Name FROM Global_Holidays 
                 WHERE (? BETWEEN Start_Date AND End_Date) AND (Target_Team = ? OR Target_Team = 'كل الفرق')
@@ -187,10 +185,10 @@ else:
                         already_submitted = True
                 
                 if already_submitted:
-                    st.error("⚠️ يا ابو الكباتن انت سجلته خلاص.")
+                    st.error("⚠️ تم تسجيل حضور هذا الفريق اليوم بالفعل! لمنع التكرار لا يمكنك الإدخال مجدداً.")
                     conn.close()
                 else:
-                    st.write("علّم على اللاعبين الحاضرين في تمرين النهاردة:")
+                    st.write("علّم على اللاعبين الحاضرين في تمرين اليوم:")
                     attendance_dict = {}
                     
                     for p in players:
@@ -199,7 +197,7 @@ else:
                             excuse = conn.execute('SELECT Reason, Document_Link FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p['Player_ID'], today_str)).fetchone()
                             if excuse:
                                 if excuse['Document_Link']:
-                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} - [📄 اعرض كده]({excuse['Document_Link']}) )*")
+                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} - [📄 عرض المستند]({excuse['Document_Link']}) )*")
                                 else:
                                     st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} )*")
                             else:
@@ -208,7 +206,7 @@ else:
                             is_present = st.checkbox("حاضر", key=f"p_{p['Player_ID']}")
                             attendance_dict[p['Player_ID']] = "Present" if is_present else "Absent"
                     
-                    if st.button("💾 احفظها كده و ابعتها", type="primary"):
+                    if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
                         now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         try:
                             for p_id, status in attendance_dict.items():
@@ -222,31 +220,31 @@ else:
                                 
                                 conn.execute('INSERT INTO Attendance (Date, Player_ID, Status, Excuse_Reason, Submitted_By, Timestamp) VALUES (?, ?, ?, ?, ?, ?)', (today_str, p_id, final_status, reason_str, user['Username'], now_ts))
                             conn.commit()
-                            st.success("✔️ اتحفظت و اتبعتت !")
+                            st.success("✔️ تم حفظ وإرسال حضور الفريق بنجاح!")
                             st.balloons()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"فى حاجة غلط : {e}")
+                            st.error(f"خطأ أثناء الحفظ: {e}")
                         finally:
                             conn.close()
 
-    # --- 2. شاشة الإداري المخصصة والذكية (Admin) ---
+    # --- 2. شاشة الإداري المخصصة (Admin) ---
     elif user['Role'] == 'Admin':
-        st.header("🛡️ دي شاشة المعلمين")
+        st.header("🛡️ لوحة تحكم ومراقبة الإداريين")
         
         admin_teams = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
         
         if not admin_teams:
-            st.warning("⚠️ مفيش حاجة مربوطة عندك - كلم كابتن كريم Super Admin.")
+            st.warning("⚠️ لم يتم ربط أي فرق بحسابك الإداري حالياً. يرجى مراجعة الـ Super Admin.")
         else:
             team_placeholders = ','.join('?' for _ in admin_teams)
             
             tab1, tab1_b, tab2, tab3, tab4 = st.tabs([
-                "📁 تسجيل إجازة لاعب بالمستندات", 
+                "📁 تسجيل إجازة لاعب ومستندها", 
                 "🗓️ تسجيل إجازة عامة (أسبوعية / جوية)",
-                "🔄 خلينا نصلح اللي المدرب عمله", 
+                "🔄 مراجعة وتصحيح أخطاء الغياب", 
                 "📝 إدخال غياب يدوي (بديل للمدرب)", 
-                "📊 مين المدرب اللي مش ملتزم"
+                "📊 كشف التزام المدربين"
             ])
             
             conn = get_db_connection()
@@ -277,8 +275,6 @@ else:
             with tab1_b:
                 st.subheader("🗓️ تسجيل إجازة مخصصة لفرقة معينة (أسبوعية / ظروف جوية / نوات)")
                 h_name = st.text_input("سبب الإجازة (مثل: الإجازة الأسبوعية الثابتة، نواة قوية وسوء طقس)")
-                
-                # الميزة المنقذة: تحديد الفريق المستهدف بدقة لمنع التعارض
                 holiday_team_options = ["كل الفرق"] + admin_teams
                 target_team = st.selectbox("حدد الفريق المستهدف بهذه الإجازة:", holiday_team_options)
                 
@@ -293,7 +289,7 @@ else:
                             VALUES (?, ?, ?, ?, ?)
                         ''', (h_name, str(h_start), str(h_end), target_team, user['Username']))
                         conn.commit()
-                        st.success(f"✔️ تم ربط إجازة ({h_name}) بـ [{target_team}] بنجاح، ولن تؤثر على باقي الفرق إطلاقاً!")
+                        st.success(f"✔️ تم ربط إجازة ({h_name}) بـ [{target_team}] بنجاح.")
                         st.rerun()
                     else:
                         st.error("يرجى كتابة سبب الإجازة!")
@@ -369,16 +365,17 @@ else:
                         st.error(f"❌ **فريق {t}**: ⚠️ لم يتم تسجيل الحضور حتى الآن!")
             conn.close()
 
-    # --- 3. شاشة السوبر أدمن المطلقة (SuperAdmin / مدير النظام) ---
+    # --- 3. شاشة السوبر أدمن المطلقة (SuperAdmin / رئيس الجهاز) ---
     elif user['Role'] == 'SuperAdmin':
         st.header("🏆 لوحة التحكم المطلقة لمدير النظام ورئيس الجهاز")
         
         menu = st.sidebar.radio("🗂️ اختر قسم التحكم الإداري:", [
             "📊 التقارير الختامية والأكسيل وثائق الأعذار", 
-            "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات (جديد)",
+            "🗓️ إدارة وحذف الإجازات المخطوءة (جديد)",
+            "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات",
             "👥 إدارة حسابات المستخدمين والكلمات السرية", 
             "🏃 إدارة قوائم اللاعبين والفرق",
-            "📥 الرفع الجماعي من ملفات Excel (جديد)",
+            "📥 الرفع الجماعي من ملفات Excel",
             "🛡️ التحكم الشامل وحذف/تعديل الداتا"
         ])
         
@@ -414,7 +411,29 @@ else:
             else:
                 st.info("لا توجد بيانات حضور مسجلة حتى الآن.")
                 
-        elif menu == "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات (جديد)":
+        # --- التبويب الحصري والجديد لحذف وإلغاء الإجازات المسجلة غلط ---
+        elif menu == "🗓️ إدارة وحذف الإجازات المخطوءة (جديد)":
+            st.subheader("🗓️ لوحة التحكم في الإجازات العامة والخاصة بالفرق")
+            st.write("💡 إذا قام إداري بتسجيل إجازة طقس أو مناسبة بالخطأ، يمكنك مسحها حالاً من هنا لفتح السيستم فوراً للمدربين.")
+            
+            holidays = conn.execute('SELECT * FROM Global_Holidays ORDER BY Holiday_ID DESC').fetchall()
+            if holidays:
+                for h in holidays:
+                    with st.container():
+                        col_h1, col_h2 = st.columns([4, 1])
+                        with col_h1:
+                            st.markdown(f"🔹 **السبب:** {h['Holiday_Name']} | **الفريق المستهدف:** `{h['Target_Team']}` | **المدة:** من {h['Start_Date']} إلى {h['End_Date']} (بواسطة: {h['Registered_By']})")
+                        with col_h2:
+                            if st.button("❌ إلغاء وفتح السيستم", key=f"del_h_{h['Holiday_ID']}", use_container_width=True):
+                                conn.execute('DELETE FROM Global_Holidays WHERE Holiday_ID = ?', (h['Holiday_ID'],))
+                                conn.commit()
+                                st.success("✔️ تم إلغاء الإجازة وحذفها من قاعدة البيانات بنجاح!")
+                                st.rerun()
+                        st.write("---")
+            else:
+                st.info("لا توجد أي إجازات مسجلة في قاعدة البيانات حالياً.")
+
+        elif menu == "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات":
             st.subheader("🕵️ شاشة مراقبة حركات الإداريين والتعديلات الفورية في السيستم")
             audit_data = conn.execute('SELECT * FROM Audit_Log ORDER BY Log_ID DESC').fetchall()
             if audit_data:
@@ -521,28 +540,22 @@ else:
                         st.success("تم حذف اللاعب بنجاح.")
                         st.rerun()
 
-        elif menu == "📥 الرفع الجماعي من ملفات Excel (جديد)":
+        elif menu == "📥 الرفع الجماعي من ملفات Excel":
             st.subheader("📥 ارفع ملف Excel لادخال الـ 500 لاعب وجميع حسابات المدربين دفعة واحدة!")
             uploaded_file = st.file_uploader("اختر ملف الأكسيل الخاص بالنادي", type=["xlsx"])
             
             if uploaded_file is not None:
                 try:
                     xl = pd.ExcelFile(uploaded_file)
-                    
                     if "Players" in xl.sheet_names:
                         df_players = pd.read_excel(uploaded_file, sheet_name="Players")
                         df_players.columns = [str(c).strip() for c in df_players.columns]
-                        
-                        st.write("📊 **معاينة من كشف اللاعبين المرفوع:**")
-                        st.dataframe(df_players.head(5))
-                        
                         if st.button("🚀 اضغط هنا لرفع قائمة اللاعبين بالكامل في قاعدة البيانات"):
                             success_p = 0
                             for _, row in df_players.iterrows():
                                 p_name_col = next((c for c in df_players.columns if c.lower() == 'player_name'), None)
                                 p_team_col = next((c for c in df_players.columns if c.lower() == 'team_age'), None)
                                 p_gender_col = next((c for c in df_players.columns if c.lower() == 'gender'), None)
-                                
                                 if p_name_col and p_team_col and pd.notna(row[p_name_col]) and pd.notna(row[p_team_col]):
                                     gender_val = str(row[p_gender_col]).strip() if p_gender_col and pd.notna(row[p_gender_col]) else "ناشئين"
                                     conn.execute('INSERT INTO Players (Player_Name, Team_Age, Gender) VALUES (?, ?, ?)', 
@@ -555,10 +568,6 @@ else:
                     if "Users" in xl.sheet_names:
                         df_users = pd.read_excel(uploaded_file, sheet_name="Users")
                         df_users.columns = [str(c).strip() for c in df_users.columns]
-                        
-                        st.write("📊 **معاينة من كشف المدربين والإداريين المرفوع:**")
-                        st.dataframe(df_users.head(5))
-                        
                         if st.button("🚀 اضغط هنا لرفع وتفعيل حسابات المدربين والإداريين"):
                             success_u = 0
                             for _, row in df_users.iterrows():
@@ -567,17 +576,10 @@ else:
                                 f_col = next((c for c in df_users.columns if c.lower() == 'full_name'), None)
                                 r_col = next((c for c in df_users.columns if c.lower() == 'role'), None)
                                 t_col = next((c for c in df_users.columns if c.lower() == 'assigned_teams'), None)
-                                
                                 if u_col and p_col and pd.notna(row[u_col]) and pd.notna(row[p_col]):
-                                    u_val = str(row[u_col]).strip().lower()
-                                    p_val = str(row[p_col]).split('.')[0].strip()
-                                    f_val = str(row[f_col]).strip() if f_col and pd.notna(row[f_col]) else "مستقبل جديد"
-                                    r_val = str(row[r_col]).strip() if r_col and pd.notna(row[r_col]) else "Coach"
-                                    t_val = str(row[t_col]).strip() if t_col and pd.notna(row[t_col]) else ""
-                                    
                                     try:
                                         conn.execute('INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams) VALUES (?, ?, ?, ?, ?)', 
-                                                     (u_val, p_val, f_val, r_val, t_val))
+                                                     (str(row[u_col]).strip().lower(), str(row[p_col]).split('.')[0].strip(), str(row[f_col]).strip(), str(row[r_col]).strip(), str(row[t_col]).strip()))
                                         success_u += 1
                                     except:
                                         pass
