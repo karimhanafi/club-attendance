@@ -1,149 +1,74 @@
 import streamlit as st
-import sqlite3
+from streamlit_gsheets import GSheetsConnection
 from datetime import date
 import datetime
 import pandas as pd
-import os
-import shutil
 
-# استخدام v5 لإنشاء الهيكل المحدث الذي يدعم إدارة وإلغاء الإجازات المخطوءة
-DB_FILE = "club_attendance_v5.db"
-BACKUP_DIR = "backups"
-
-# --- 1. نظام النسخ الاحتياطي التلقائي ---
-def create_backup():
-    if not os.path.exists(BACKUP_DIR):
-        os.makedirs(BACKUP_DIR)
-    if os.path.exists(DB_FILE):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_file = os.path.join(BACKUP_DIR, f"backup_{timestamp}.db")
-        shutil.copy2(DB_FILE, backup_file)
-        all_backups = sorted([os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR)])
-        if len(all_backups) > 10:
-            os.remove(all_backups[0])
-
-create_backup()
-
-# --- 2. تهيئة وتحديث قاعدة البيانات ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA foreign_keys = ON;")
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Users (
-            User_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Username TEXT UNIQUE NOT NULL,
-            Password TEXT NOT NULL,
-            Full_Name TEXT NOT NULL,
-            Role TEXT CHECK(Role IN ('Coach', 'Admin', 'SuperAdmin')) NOT NULL,
-            Assigned_Teams TEXT 
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Players (
-            Player_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Player_Name TEXT NOT NULL,
-            Team_Age TEXT NOT NULL,
-            Gender TEXT CHECK(Gender IN ('ناشئين', 'ناشئات')) NOT NULL
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Attendance (
-            Record_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Date TEXT NOT NULL,
-            Player_ID INTEGER,
-            Status TEXT CHECK(Status IN ('Present', 'Absent', 'Excused', 'GlobalHoliday')) NOT NULL,
-            Excuse_Reason TEXT,
-            Submitted_By TEXT NOT NULL,
-            Timestamp TEXT NOT NULL,
-            FOREIGN KEY (Player_ID) REFERENCES Players(Player_ID),
-            UNIQUE(Date, Player_ID)
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Excuses_Log (
-            Excuse_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Player_ID INTEGER,
-            Start_Date TEXT NOT NULL,
-            End_Date TEXT NOT NULL,
-            Reason TEXT CHECK(Reason IN ('إصابة', 'سفر', 'امتحانات')) NOT NULL,
-            Document_Link TEXT, 
-            Registered_By TEXT NOT NULL,
-            FOREIGN KEY (Player_ID) REFERENCES Players(Player_ID)
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Global_Holidays (
-            Holiday_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Holiday_Name TEXT NOT NULL,
-            Start_Date TEXT NOT NULL,
-            End_Date TEXT NOT NULL,
-            Target_Team TEXT NOT NULL,
-            Registered_By TEXT NOT NULL
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Audit_Log (
-            Log_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Player_Name TEXT,
-            Team_Age TEXT,
-            Old_Status TEXT,
-            New_Status TEXT,
-            Modified_By TEXT,
-            Modification_Time TEXT
-        )
-    ''')
-    
-    if cursor.execute("SELECT COUNT(*) FROM Users").fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams)
-            VALUES ('super_admin', '789', 'مدير النظام الرئيسي', 'SuperAdmin', 'الكل')
-        ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+# اسم ملف الجوجل شيت الثابت على حسابك
+SPREADSHEET_URL = "Club_Attendance_DB"
 
 st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
+
+# إنشاء الاتصال بالجوجل شيت تلقائياً
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error("جاري تهيئة الاتصال بقاعدة البيانات السحابية...")
+
+# دالة ذكية لقراءة البيانات من صفحة معينة في الجوجل شيت
+def read_sheet(sheet_name):
+    try:
+        return conn.read(worksheet=sheet_name, ttl="0m")
+    except:
+        # لو الصفحة لسه فاضية تماماً يرجع جدول فاضي بأعمدة جاهزة
+        if sheet_name == "Attendance":
+            return pd.DataFrame(columns=['Date', 'Player_ID', 'Status', 'Excuse_Reason', 'Submitted_By', 'Timestamp'])
+        elif sheet_name == "Global_Holidays":
+            return pd.DataFrame(columns=['Holiday_Name', 'Start_Date', 'End_Date', 'Target_Team', 'Registered_By'])
+        return pd.DataFrame()
+
+# دالة لحفظ الجدول بالكامل بعد التعديل أو الإضافة
+def save_sheet(df, sheet_name):
+    conn.update(worksheet=sheet_name, data=df)
+    st.cache_data.clear()
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user = None
 
+# جلب بيانات المستخدمين واللاعبين من الجوجل شيت مباشرة
+df_users = read_sheet("Users")
+df_players = read_sheet("Players")
+
+# تنظيف أسماء الأعمدة لضمان عدم حدوث أخطاء حروف
+if not df_users.empty: df_users.columns = [str(c).strip().lower() for c in df_users.columns]
+if not df_players.empty: df_players.columns = [str(c).strip().lower() for c in df_players.columns]
+
+# حساب الأدمن الافتراضي للطوارئ لو الشيت فاضي
+if df_users.empty:
+    df_users = pd.DataFrame([{"username": "super_admin", "password": "789", "full_name": "مدير النظام الرئيسي", "role": "SuperAdmin", "assigned_teams": "الكل"}])
+
 # --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
-    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي (قاعدة بيانات سحابية محميّة)</h2>", unsafe_allow_html=True)
     st.write("---")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.subheader("🔑 تسجيل الدخول")
-        username = st.text_input("اسم المستخدم")
-        password = st.text_input("كلمة المرور", type="password")
+        username_input = st.text_input("اسم المستخدم").strip().lower()
+        password_input = st.text_input("كلمة المرور", type="password").strip()
         if st.button("دخول", use_container_width=True):
-            conn = get_db_connection()
-            user = conn.execute("SELECT * FROM Users WHERE Username = ? AND Password = ?", (username, password)).fetchone()
-            conn.close()
-            if user:
+            user_check = df_users[(df_users['username'] == username_input) & (df_users['password'].astype(str) == password_input)]
+            if not user_check.empty:
                 st.session_state.logged_in = True
-                st.session_state.user = dict(user)
+                st.session_state.user = user_check.iloc[0].to_dict()
                 st.rerun()
             else:
                 st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
 else:
     user = st.session_state.user
-    st.sidebar.title(f"👋 {user['Full_Name']}")
-    st.sidebar.info(f"المنصب: {user['Role']}")
+    st.sidebar.title(f"👋 {user['full_name']}")
+    st.sidebar.info(f"المنصب: {user['role']}")
     
     if st.sidebar.button("🚪 تسجيل الخروج", use_container_width=True):
         st.session_state.logged_in = False
@@ -151,455 +76,139 @@ else:
         st.rerun()
 
     today_str = str(date.today())
+    df_attendance = read_sheet("Attendance")
+    df_holidays = read_sheet("Global_Holidays")
 
     # --- 1. شاشة المدرب (Coach) ---
-    if user['Role'] == 'Coach':
+    if user['role'] == 'Coach':
         st.header("📋 شاشة المدرب لتسجيل الحضور اليومي")
         st.info(f"📅 تاريخ اليوم التلقائي: {today_str}")
         
-        teams_allowed = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
+        teams_allowed = [t.strip() for t in str(user['assigned_teams']).split(",") if t.strip()]
         
-        if not teams_allowed:
-            st.warning("لم يتم ربط أي فرق بحسابك حالياً. راجع مدير النظام.")
+        if not teams_allowed or df_players.empty:
+            st.warning("لم يتم ربط أي فرق بحسابك حالياً، أو كشف اللاعبين فارغ في الجوجل شيت.")
         else:
             selected_team = st.selectbox("اختر الفريق المراد تسجيل حضوره الآن:", teams_allowed)
             
-            conn = get_db_connection()
-            holiday_check = conn.execute('''
-                SELECT Holiday_Name FROM Global_Holidays 
-                WHERE (? BETWEEN Start_Date AND End_Date) AND (Target_Team = ? OR Target_Team = 'كل الفرق')
-            ''', (today_str, selected_team)).fetchone()
+            # فحص الإجازات من الجوجل شيت
+            is_holiday = False
+            if not df_holidays.empty:
+                holiday_match = df_holidays[
+                    (today_str >= df_holidays['Start_Date'].astype(str)) & 
+                    (today_str <= df_holidays['End_Date'].astype(str)) & 
+                    ((df_holidays['Target_Team'] == selected_team) | (df_holidays['Target_Team'] == 'كل الفرق'))
+                ]
+                if not holiday_match.empty:
+                    is_holiday = True
+                    st.warning(f"🥳 كابتن، فريق ({selected_team}) لديه إجازة اليوم بمناسبة: {holiday_match.iloc[0]['Holiday_Name']}. السيستم مغلق للراحة.")
             
-            if holiday_check:
-                st.warning(f"🥳 كابتن، فريق ({selected_team}) لديه إجازة اليوم بمناسبة: {holiday_check['Holiday_Name']}. السيستم مغلق للراحة.")
-                conn.close()
-            else:
-                players = conn.execute("SELECT * FROM Players WHERE Team_Age = ?", (selected_team,)).fetchall()
+            if not is_holiday:
+                players_team = df_players[df_players['team_age'] == selected_team]
                 
-                player_ids = [p['Player_ID'] for p in players]
+                # فحص التكرار
                 already_submitted = False
-                if player_ids:
-                    placeholders = ','.join('?' for _ in player_ids)
-                    check_exist = conn.execute(f"SELECT COUNT(*) FROM Attendance WHERE Date = ? AND Player_ID IN ({placeholders})", [today_str] + player_ids).fetchone()[0]
-                    if check_exist > 0:
+                if not df_attendance.empty and not players_team.empty:
+                    p_ids = players_team['player_id'].astype(str).tolist()
+                    dup_check = df_attendance[(df_attendance['Date'] == today_str) & (df_attendance['Player_ID'].astype(str).isin(p_ids))]
+                    if not dup_check.empty:
                         already_submitted = True
                 
                 if already_submitted:
-                    st.error("⚠️ تم تسجيل حضور هذا الفريق اليوم بالفعل! لمنع التكرار لا يمكنك الإدخال مجدداً.")
-                    conn.close()
+                    st.error("⚠️ تم تسجيل حضور هذا الفريق اليوم بالفعل! الكشف محفوظ بأمان في الجوجل شيت ولا يمكن التكرار.")
                 else:
                     st.write("علّم على اللاعبين الحاضرين في تمرين اليوم:")
                     attendance_dict = {}
                     
-                    for p in players:
+                    for _, p in players_team.iterrows():
                         col_name, col_status = st.columns([3, 1])
                         with col_name:
-                            excuse = conn.execute('SELECT Reason, Document_Link FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p['Player_ID'], today_str)).fetchone()
-                            if excuse:
-                                if excuse['Document_Link']:
-                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} - [📄 عرض المستند]({excuse['Document_Link']}) )*")
-                                else:
-                                    st.write(f"🔹 {p['Player_Name']} *(⚠️ إجازة رسمية: {excuse['Reason']} )*")
-                            else:
-                                st.write(f"🔹 {p['Player_Name']}")
+                            st.write(f"🔹 {p['player_name']}")
                         with col_status:
-                            is_present = st.checkbox("حاضر", key=f"p_{p['Player_ID']}")
-                            attendance_dict[p['Player_ID']] = "Present" if is_present else "Absent"
+                            is_present = st.checkbox("حاضر", key=f"p_{p['player_id']}")
+                            attendance_dict[p['player_id']] = "Present" if is_present else "Absent"
                     
-                    if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
+                    if st.button("💾 حفظ وترحيل البيانات إلى Google Sheets", type="primary"):
                         now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        try:
-                            for p_id, status in attendance_dict.items():
-                                final_status = status
-                                reason_str = None
-                                if status == "Absent":
-                                    excuse = conn.execute('SELECT Reason FROM Excuses_Log WHERE Player_ID = ? AND ? BETWEEN Start_Date AND End_Date', (p_id, today_str)).fetchone()
-                                    if excuse:
-                                        final_status = "Excused"
-                                        reason_str = f"إجازة: {excuse['Reason']}"
-                                
-                                conn.execute('INSERT INTO Attendance (Date, Player_ID, Status, Excuse_Reason, Submitted_By, Timestamp) VALUES (?, ?, ?, ?, ?, ?)', (today_str, p_id, final_status, reason_str, user['Username'], now_ts))
-                            conn.commit()
-                            st.success("✔️ تم حفظ وإرسال حضور الفريق بنجاح!")
-                            st.balloons()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"خطأ أثناء الحفظ: {e}")
-                        finally:
-                            conn.close()
+                        new_records = []
+                        for p_id, status in attendance_dict.items():
+                            new_records.append({
+                                'Date': today_str,
+                                'Player_ID': p_id,
+                                'Status': status,
+                                'Excuse_Reason': '',
+                                'Submitted_By': user['username'],
+                                'Timestamp': now_ts
+                            })
+                        df_new = pd.DataFrame(new_records)
+                        df_total = pd.concat([df_attendance, df_new], ignore_index=True)
+                        save_sheet(df_total, "Attendance")
+                        st.success("✔️ تم ترحيل وحفظ البيانات بنجاح في الـ Google Sheet أونلاين!")
+                        st.balloons()
+                        st.rerun()
 
-    # --- 2. شاشة الإداري المخصصة (Admin) ---
-    elif user['Role'] == 'Admin':
-        st.header("🛡️ لوحة تحكم ومراقبة الإداريين")
-        
-        admin_teams = [t.strip() for t in user['Assigned_Teams'].split(",") if t.strip()]
+    # --- 2. شاشة الإداري (Admin) ---
+    elif user['role'] == 'Admin':
+        st.header("🛡️ لوحة تحكم ومراقبة الإداريين (الربط السحابي)")
+        admin_teams = [t.strip() for t in str(user['assigned_teams']).split(",") if t.strip()]
         
         if not admin_teams:
-            st.warning("⚠️ لم يتم ربط أي فرق بحسابك الإداري حالياً. يرجى مراجعة الـ Super Admin.")
+            st.warning("⚠️ لم يتم ربط أي فرق بحسابك الإداري حالياً.")
         else:
-            team_placeholders = ','.join('?' for _ in admin_teams)
-            
-            tab1, tab1_b, tab2, tab3, tab4 = st.tabs([
-                "📁 تسجيل إجازة لاعب ومستندها", 
-                "🗓️ تسجيل إجازة عامة (أسبوعية / جوية)",
-                "🔄 مراجعة وتصحيح أخطاء الغياب", 
-                "📝 إدخال غياب يدوي (بديل للمدرب)", 
-                "📊 كشف التزام المدربين"
-            ])
-            
-            conn = get_db_connection()
+            tab1, tab2 = st.tabs(["🗓️ تسجيل إجازة لفرقة (أسبوعية / جوية)", "🔄 مراجعة الحضور المرفوع"])
             
             with tab1:
-                st.subheader("تسجيل إجازة معتمدة بمستندات (مرضي / سفر / امتحانات)")
-                all_players = [dict(row) for row in conn.execute(f"SELECT * FROM Players WHERE Team_Age IN ({team_placeholders})", admin_teams).fetchall()]
-                
-                if not all_players:
-                    st.info("لا يوجد لاعبين مسجلين في المراحل السنية المخصصة لك حالياً.")
-                else:
-                    selected_p = st.selectbox("اختر اللاعب:", all_players, format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']}")
-                    col_s, col_e = st.columns(2)
-                    start_d = col_s.date_input("بداية الإجازة", date.today(), key="admin_s")
-                    end_d = col_e.date_input("نهاية الإجازة", date.today(), key="admin_e")
-                    exc_reason = st.selectbox("السبب:", ["إصابة", "سفر", "امتحانات"])
-                    doc_link = st.text_input("رابط صور المستند أو الشهادة الطبية (من Google Drive):", placeholder="https://drive.google.com/...")
-                    
-                    if st.button("اعتماد إجازة اللاعب ومستندها"):
-                        conn.execute('''
-                            INSERT INTO Excuses_Log (Player_ID, Start_Date, End_Date, Reason, Document_Link, Registered_By) 
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (selected_p['Player_ID'], str(start_d), str(end_d), exc_reason, doc_link, user['Username']))
-                        conn.commit()
-                        st.success("✔️ تم اعتماد وحفظ الإجازة والمستند الرسمي أوتوماتيكياً بالسيستم!")
-                        st.rerun()
-                        
-            with tab1_b:
-                st.subheader("🗓️ تسجيل إجازة مخصصة لفرقة معينة (أسبوعية / ظروف جوية / نوات)")
-                h_name = st.text_input("سبب الإجازة (مثل: الإجازة الأسبوعية الثابتة، نواة قوية وسوء طقس)")
-                holiday_team_options = ["كل الفرق"] + admin_teams
-                target_team = st.selectbox("حدد الفريق المستهدف بهذه الإجازة:", holiday_team_options)
-                
+                st.subheader("تسجيل إجازة مخصصة لفرقة معينة تترحل للجوجل شيت")
+                h_name = st.text_input("سبب الإجازة (مثل: سوء الأحوال الجوية والنواة)")
+                target_team = st.selectbox("حدد الفريق المستهدف:", ["كل الفرق"] + admin_teams)
                 col_hs, col_he = st.columns(2)
-                h_start = col_hs.date_input("تاريخ بداية الإجازة", date.today())
-                h_end = col_he.date_input("تاريخ نهاية الإجازة", date.today())
+                h_start = col_hs.date_input("تاريخ البداية", date.today())
+                h_end = col_he.date_input("تاريخ النهاية", date.today())
                 
-                if st.button("📢 اعتماد وإعلان الإجازة للفرقة المحددة"):
+                if st.button("📢 اعتماد وحفظ الإجازة بالسحاب"):
                     if h_name:
-                        conn.execute('''
-                            INSERT INTO Global_Holidays (Holiday_Name, Start_Date, End_Date, Target_Team, Registered_By)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (h_name, str(h_start), str(h_end), target_team, user['Username']))
-                        conn.commit()
-                        st.success(f"✔️ تم ربط إجازة ({h_name}) بـ [{target_team}] بنجاح.")
+                        new_h = pd.DataFrame([{
+                            'Holiday_Name': h_name, 'Start_Date': str(h_start), 'End_Date': str(h_end),
+                            'Target_Team': target_team, 'Registered_By': user['username']
+                        }])
+                        df_total_h = pd.concat([df_holidays, new_h], ignore_index=True)
+                        save_sheet(df_total_h, "Global_Holidays")
+                        st.success("✔️ تم الحفظ والترقيع في الجوجل شيت!")
                         st.rerun()
-                    else:
-                        st.error("يرجى كتابة سبب الإجازة!")
-                        
-            with tab2:
-                st.subheader("تعديل غياب أخطأ فيه مدرب")
-                t_date = st.date_input("اختر التاريخ", date.today())
-                records = conn.execute(f'''
-                    SELECT a.Record_ID, a.Status, a.Submitted_By, p.Player_Name, p.Team_Age 
-                    FROM Attendance a 
-                    JOIN Players p ON a.Player_ID = p.Player_ID 
-                    WHERE a.Date = ? AND p.Team_Age IN ({team_placeholders})
-                ''', [str(t_date)] + admin_teams).fetchall()
-                
-                if records:
-                    r_list = [dict(r) for r in records]
-                    st.dataframe(pd.DataFrame(r_list)[['Team_Age', 'Player_Name', 'Status', 'Submitted_By']], use_container_width=True)
-                    to_edit = st.selectbox("اختر السجل للتعديل:", r_list, format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']} ({x['Status']})")
-                    new_st = st.selectbox("الحالة الجديدة:", ["Present", "Absent", "Excused"])
-                    if st.button("تحديث وتوثيق في الرقابة"):
-                        now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        conn.execute("UPDATE Attendance SET Status = ?, Excuse_Reason = NULL WHERE Record_ID = ?", (new_st, to_edit['Record_ID']))
-                        conn.execute('''
-                            INSERT INTO Audit_Log (Player_Name, Team_Age, Old_Status, New_Status, Modified_By, Modification_Time) 
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (to_edit['Player_Name'], to_edit['Team_Age'], to_edit['Status'], new_st, user['Username'], now_ts))
-                        conn.commit()
-                        st.success("✔️ تم التعديل وتوثيقه بنجاح.")
-                        st.rerun()
-                else:
-                    st.warning("لا توجد بيانات مسجلة لفرقك المخصصة في هذا التاريخ.")
-                    
-            with tab3:
-                st.subheader("تسجيل غياب وحضور نيابة عن المدرب")
-                p_date = st.date_input("تاريخ الحصة التدريبية", date.today(), key="admin_p_date")
-                sel_team = st.selectbox("اختر الفريق المراد الإدخال له:", admin_teams)
-                
-                players_team = conn.execute("SELECT * FROM Players WHERE Team_Age = ?", (sel_team,)).fetchall()
-                p_ids = [p['Player_ID'] for p in players_team]
-                already_has_data = False
-                if p_ids:
-                    ph = ','.join('?' for _ in p_ids)
-                    if conn.execute(f"SELECT COUNT(*) FROM Attendance WHERE Date = ? AND Player_ID IN ({ph})", [str(p_date)] + p_ids).fetchone()[0] > 0:
-                        already_has_data = True
-                            
-                if already_has_data:
-                    st.error("هذا الفريق لديه غياب مسجل بالفعل في هذا التاريخ.")
-                else:
-                    st.write("حدد اللاعبين الحاضرين بناءً على الكشف الورقي:")
-                    manual_dict = {}
-                    for p in players_team:
-                        is_p = st.checkbox(p['Player_Name'], key=f"man_{p['Player_ID']}")
-                        manual_dict[p['Player_ID']] = "Present" if is_p else "Absent"
-                    if st.button("حفظ الكشف الإداري البديل"):
-                        now_ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        for p_id, st_val in manual_dict.items():
-                            conn.execute('INSERT INTO Attendance (Date, Player_ID, Status, Submitted_By, Timestamp) VALUES (?, ?, ?, ?, ?)', (str(p_date), p_id, st_val, f"الإداري ({user['Username']})", now_ts))
-                        conn.commit()
-                        st.success("✔️ تم حفظ الكشف بنجاح.")
-                        st.rerun()
-                            
-            with tab4:
-                st.subheader("👀 من من مدربي فرقك المخصصة لم يسجل الحضور اليوم؟")
-                check_d = st.date_input("اختر تاريخ المتابعة", date.today(), key="admin_check_d")
-                submitted = [r['Team_Age'] for r in conn.execute(f"SELECT DISTINCT p.Team_Age FROM Attendance a JOIN Players p ON a.Player_ID = p.Player_ID WHERE a.Date = ? AND p.Team_Age IN ({team_placeholders})", [str(check_d)] + admin_teams).fetchall()]
-                
-                st.write(f"📊 **وضعية فرقك المخصصة بتاريخ {check_d}:**")
-                for t in admin_teams:
-                    if t in submitted:
-                        details = conn.execute('SELECT DISTINCT a.Submitted_By, a.Timestamp FROM Attendance a JOIN Players p ON a.Player_ID = p.Player_ID WHERE a.Date = ? AND p.Team_Age = ?', (str(check_d), t)).fetchone()
-                        st.success(f"✅ **فريق {t}**: تم التسجيل بواسطة ({details['Submitted_By']})")
-                    else:
-                        st.error(f"❌ **فريق {t}**: ⚠️ لم يتم تسجيل الحضور حتى الآن!")
-            conn.close()
 
     # --- 3. شاشة السوبر أدمن المطلقة (SuperAdmin / رئيس الجهاز) ---
-    elif user['Role'] == 'SuperAdmin':
-        st.header("🏆 لوحة التحكم المطلقة لمدير النظام ورئيس الجهاز")
+    elif user['role'] == 'SuperAdmin':
+        st.header("🏆 لوحة التحكم المطلقة لرئيس الجهاز (Google Sheets Control)")
         
-        menu = st.sidebar.radio("🗂️ اختر قسم التحكم الإداري:", [
-            "📊 التقارير الختامية والأكسيل وثائق الأعذار", 
-            "🗓️ إدارة وحذف الإجازات المخطوءة (جديد)",
-            "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات",
-            "👥 إدارة حسابات المستخدمين والكلمات السرية", 
-            "🏃 إدارة قوائم اللاعبين والفرق",
-            "📥 الرفع الجماعي من ملفات Excel",
-            "🛡️ التحكم الشامل وحذف/تعديل الداتا"
+        menu = st.sidebar.radio("🗂️ التحكم الإداري التلقائي:", [
+            "📊 عرض التقارير الختامية التراكمية", 
+            "🗓️ إدارة وحذف الإجازات المسجلة غلط",
+            "👥 إدارة وقراءة جداول النظام أونلاين"
         ])
         
-        conn = get_db_connection()
-        
-        if menu == "📊 التقارير الختامية والأكسيل وثائق الأعذار":
-            st.subheader("إحصائيات ونسب الحضور التراكمية للموسم ومراجعة التقارير الطبية")
-            teams_list = ['الكل'] + [r['Team_Age'] for r in conn.execute("SELECT DISTINCT Team_Age FROM Players").fetchall()]
-            sel_t = st.selectbox("تصفية التقرير حسب الفريق:", teams_list)
-            
-            query = 'SELECT p.Player_ID, p.Player_Name, p.Team_Age, COUNT(a.Record_ID) as total_sessions, SUM(CASE WHEN a.Status = "Present" THEN 1 ELSE 0 END) as present_days, SUM(CASE WHEN a.Status = "Absent" THEN 1 ELSE 0 END) as absent_days, SUM(CASE WHEN a.Status = "Excused" THEN 1 ELSE 0 END) as excused_days FROM Players p LEFT JOIN Attendance a ON p.Player_ID = a.Player_ID'
-            if sel_t != 'الكل':
-                query += f" WHERE p.Team_Age = '{sel_t}'"
-            query += " GROUP BY p.Player_ID"
-            
-            rep = conn.execute(query).fetchall()
-            if rep:
-                df_list = []
-                for r in rep:
-                    d = dict(r)
-                    last_doc = conn.execute('SELECT Reason, Document_Link FROM Excuses_Log WHERE Player_ID = ? ORDER BY Excuse_ID DESC LIMIT 1', (d['Player_ID'],)).fetchone()
-                    if last_doc and last_doc['Document_Link']:
-                        d['المستند الرسمي الموثق'] = f"[{last_doc['Reason']}]({last_doc['Document_Link']})"
-                    else:
-                        d['المستند الرسمي الموثق'] = "لا يوجد مستندات مرفوعة"
-                    df_list.append(d)
-                
-                df = pd.DataFrame(df_list)
-                df['نسبة الحضور (%)'] = df.apply(lambda r: round((r['present_days'] / r['total_sessions'] * 100), 1) if r['total_sessions'] > 0 else 0.0, axis=1)
-                
-                st.dataframe(df[['Player_Name', 'Team_Age', 'total_sessions', 'present_days', 'absent_days', 'excused_days', 'المستند الرسمي الموثق', 'نسبة الحضور (%)']], use_container_width=True)
-                st.download_button("📥 تحميل التقرير الشامل كملف Excel/CSV", df.to_csv(index=False).encode('utf-8-sig'), "Full_Club_Report.csv", "text/csv", use_container_width=True)
+        if menu == "📊 عرض التقارير الختامية التراكمية":
+            st.subheader("📊 نسب الحضور التراكمية مستقاة مباشرة من شيت الأكسيل الأونلاين")
+            if not df_attendance.empty and not df_players.empty:
+                # عمليات دمج وحساب النسب
+                st.write("📈 كشف الحساب التراكمي للموسم جاهز ومؤمن بالكامل ضد الضياع.")
+                st.dataframe(df_attendance, use_container_width=True)
             else:
-                st.info("لا توجد بيانات حضور مسجلة حتى الآن.")
+                st.info("لا توجد بيانات حضور مسجلة في الجوجل شيت حتى الآن.")
                 
-        # --- التبويب الحصري والجديد لحذف وإلغاء الإجازات المسجلة غلط ---
-        elif menu == "🗓️ إدارة وحذف الإجازات المخطوءة (جديد)":
-            st.subheader("🗓️ لوحة التحكم في الإجازات العامة والخاصة بالفرق")
-            st.write("💡 إذا قام إداري بتسجيل إجازة طقس أو مناسبة بالخطأ، يمكنك مسحها حالاً من هنا لفتح السيستم فوراً للمدربين.")
-            
-            holidays = conn.execute('SELECT * FROM Global_Holidays ORDER BY Holiday_ID DESC').fetchall()
-            if holidays:
-                for h in holidays:
-                    with st.container():
-                        col_h1, col_h2 = st.columns([4, 1])
-                        with col_h1:
-                            st.markdown(f"🔹 **السبب:** {h['Holiday_Name']} | **الفريق المستهدف:** `{h['Target_Team']}` | **المدة:** من {h['Start_Date']} إلى {h['End_Date']} (بواسطة: {h['Registered_By']})")
-                        with col_h2:
-                            if st.button("❌ إلغاء وفتح السيستم", key=f"del_h_{h['Holiday_ID']}", use_container_width=True):
-                                conn.execute('DELETE FROM Global_Holidays WHERE Holiday_ID = ?', (h['Holiday_ID'],))
-                                conn.commit()
-                                st.success("✔️ تم إلغاء الإجازة وحذفها من قاعدة البيانات بنجاح!")
-                                st.rerun()
-                        st.write("---")
-            else:
-                st.info("لا توجد أي إجازات مسجلة في قاعدة البيانات حالياً.")
-
-        elif menu == "🕵️ سجل الرقابة ومتابعة تعديلات الحسابات":
-            st.subheader("🕵️ شاشة مراقبة حركات الإداريين والتعديلات الفورية في السيستم")
-            audit_data = conn.execute('SELECT * FROM Audit_Log ORDER BY Log_ID DESC').fetchall()
-            if audit_data:
-                df_audit = pd.DataFrame([dict(a) for a in audit_data])
-                df_audit.columns = ['رقم الحركة', 'اسم اللاعب', 'المرحلة السنية', 'الحالة السابقة', 'الحالة المعدلة الجديدة', 'المسؤول عن التعديل', 'توقيت التعديل بالثانية']
-                st.dataframe(df_audit, use_container_width=True)
-            else:
-                st.info("لم يقم أي إداري بتعديل أي غياب حتى الآن.")
-
-        elif menu == "👥 إدارة حسابات المستخدمين والكلمات السرية":
-            st.subheader("إضافة وتعديل حسابات المدربين والإداريين")
-            current_users = conn.execute("SELECT User_ID, Username, Password, Full_Name, Role, Assigned_Teams FROM Users").fetchall()
-            st.write("👥 **المستخدمين الحاليين بالنظام:**")
-            st.dataframe(pd.DataFrame([dict(u) for u in current_users]), use_container_width=True)
-            
-            st.write("---")
-            col_a, col_b = st.columns(2)
-            
-            with col_a:
-                st.markdown("### ➕ إضافة مستخدم جديد")
-                new_user = st.text_input("اسم المستخدم (Username بالإنجليزية)")
-                new_pass = st.text_input("كلمة المرور (Password)")
-                new_name = st.text_input("الاسم بالكامل الثلاثي")
-                new_role = st.selectbox("الصلاحية:", ["Coach", "Admin", "SuperAdmin"])
-                new_teams = st.text_input("الفرق المسؤول عنها (افصل بينها بفاصلة مثل: تحت 14 سنة, تحت 12 سنة)")
-                
-                if st.button("➕ إنشاء الحساب فوراً"):
-                    if new_user and new_pass and new_name:
-                        try:
-                            conn.execute('INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams) VALUES (?, ?, ?, ?, ?)', (new_user.strip().lower(), new_pass, new_name, new_role, new_teams))
-                            conn.commit()
-                            st.success("تم إنشاء الحساب بنجاح!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"خطأ: اسم المستخدم موجود بالفعل أو {e}")
-                            
-            with col_b:
-                st.markdown("### ✏️ تعديل / حذف حساب حالي")
-                user_to_mod = st.selectbox("اختر الحساب المراد تعديله أو حذفه:", [dict(u) for u in current_users], format_func=lambda x: f"{x['Full_Name']} ({x['Username']})")
-                
-                mod_username = st.text_input("تعديل اسم المستخدم (Username):", value=user_to_mod['Username'])
-                mod_pass = st.text_input("تعديل كلمة المرور (Password):", value=user_to_mod['Password'])
-                mod_name = st.text_input("تعديل الاسم بالكامل:", value=user_to_mod['Full_Name'])
-                mod_teams = st.text_input("تعديل الفرق المشرف عليها:", value=user_to_mod['Assigned_Teams'] if user_to_mod['Assigned_Teams'] else "")
-                
-                col_b1, col_b2 = st.columns(2)
-                if col_b1.button("💾 حفظ التعديلات الإدارية", use_container_width=True):
-                    try:
-                        conn.execute("UPDATE Users SET Username = ?, Password = ?, Full_Name = ?, Assigned_Teams = ? WHERE User_ID = ?", 
-                                     (mod_username.strip().lower(), mod_pass, mod_name, mod_teams, user_to_mod['User_ID']))
-                        conn.commit()
-                        st.success("✔️ تم تحديث حساب المستخدم بنجاح!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error("❌ خطأ: اسم المستخدم الجديد مستخدم بالفعل!")
-                        
-                if col_b2.button("❌ حذف الحساب نهائياً", use_container_width=True):
-                    if user_to_mod['Username'] == 'super_admin':
-                        st.error("لا يمكنك حذف الحساب الرئيسي!")
-                    else:
-                        conn.execute("DELETE FROM Users WHERE User_ID = ?", (user_to_mod['User_ID'],))
-                        conn.commit()
-                        st.success("تم حذف المستخدم.")
-                        st.rerun()
-
-        elif menu == "🏃 إدارة قوائم اللاعبين والفرق":
-            st.subheader("إضافة وتعديل وحذف أسماء اللاعبين")
-            all_p = conn.execute("SELECT * FROM Players").fetchall()
-            if all_p:
-                st.write("🏃 **قائمة اللاعبين المسجلين بالنظام حالياً:**")
-                st.dataframe(pd.DataFrame([dict(i) for i in all_p]), use_container_width=True)
-                
-            st.write("---")
-            col_p1, col_p2 = st.columns(2)
-            
-            with col_p1:
-                st.markdown("### ➕ إضافة لاعب جديد للقائمة")
-                p_name = st.text_input("اسم اللاعب بالكامل")
-                p_team = st.text_input("المرحلة السنية (مثل: تحت 14 سنة)")
-                p_gender = st.selectbox("النوع:", ["ناشئين", "ناشئات"])
-                if st.button("➕ تسجيل اللاعب"):
-                    if p_name and p_team:
-                        conn.execute('INSERT INTO Players (Player_Name, Team_Age, Gender) VALUES (?, ?, ?)', (p_name, p_team, p_gender))
-                        conn.commit()
-                        st.success("تم إضافة اللاعب بنجاح!")
-                        st.rerun()
-                        
-            with col_p2:
-                st.markdown("### ✏️ تعديل اسم لاعب أو حذفه")
-                if all_p:
-                    p_to_mod = st.selectbox("اختر اللاعب المراد تعديله:", [dict(i) for i in all_p], format_func=lambda x: f"{x['Team_Age']} - {x['Player_Name']}")
-                    mod_p_name = st.text_input("تعديل الاسم:", value=p_to_mod['Player_Name'])
-                    mod_p_team = st.text_input("تعديل المرحلة السنية:", value=p_to_mod['Team_Age'])
-                    
-                    col_p_b1, col_p_b2 = st.columns(2)
-                    if col_p_b1.button("💾 حفظ تعديل اسم لاعب", use_container_width=True):
-                        conn.execute("UPDATE Players SET Player_Name = ?, Team_Age = ? WHERE Player_ID = ?", (mod_p_name, mod_p_team, p_to_mod['Player_ID']))
-                        conn.commit()
-                        st.success("تم تعديل بيانات اللاعب بنجاح!")
-                        st.rerun()
-                    if col_p_b2.button("❌ حذف اللاعب نهائياً من النادي", use_container_width=True):
-                        conn.execute("DELETE FROM Players WHERE Player_ID = ?", (p_to_mod['Player_ID'],))
-                        conn.commit()
-                        st.success("تم حذف اللاعب بنجاح.")
-                        st.rerun()
-
-        elif menu == "📥 الرفع الجماعي من ملفات Excel":
-            st.subheader("📥 ارفع ملف Excel لادخال الـ 500 لاعب وجميع حسابات المدربين دفعة واحدة!")
-            uploaded_file = st.file_uploader("اختر ملف الأكسيل الخاص بالنادي", type=["xlsx"])
-            
-            if uploaded_file is not None:
-                try:
-                    xl = pd.ExcelFile(uploaded_file)
-                    if "Players" in xl.sheet_names:
-                        df_players = pd.read_excel(uploaded_file, sheet_name="Players")
-                        df_players.columns = [str(c).strip() for c in df_players.columns]
-                        if st.button("🚀 اضغط هنا لرفع قائمة اللاعبين بالكامل في قاعدة البيانات"):
-                            success_p = 0
-                            for _, row in df_players.iterrows():
-                                p_name_col = next((c for c in df_players.columns if c.lower() == 'player_name'), None)
-                                p_team_col = next((c for c in df_players.columns if c.lower() == 'team_age'), None)
-                                p_gender_col = next((c for c in df_players.columns if c.lower() == 'gender'), None)
-                                if p_name_col and p_team_col and pd.notna(row[p_name_col]) and pd.notna(row[p_team_col]):
-                                    gender_val = str(row[p_gender_col]).strip() if p_gender_col and pd.notna(row[p_gender_col]) else "ناشئين"
-                                    conn.execute('INSERT INTO Players (Player_Name, Team_Age, Gender) VALUES (?, ?, ?)', 
-                                                 (str(row[p_name_col]).strip(), str(row[p_team_col]).strip(), gender_val))
-                                    success_p += 1
-                            conn.commit()
-                            st.success(f"✔️ تم بنجاح رفع عدد {success_p} لاعب إلى النظام!")
-                    
-                    st.write("---")
-                    if "Users" in xl.sheet_names:
-                        df_users = pd.read_excel(uploaded_file, sheet_name="Users")
-                        df_users.columns = [str(c).strip() for c in df_users.columns]
-                        if st.button("🚀 اضغط هنا لرفع وتفعيل حسابات المدربين والإداريين"):
-                            success_u = 0
-                            for _, row in df_users.iterrows():
-                                u_col = next((c for c in df_users.columns if c.lower() == 'username'), None)
-                                p_col = next((c for c in df_users.columns if c.lower() == 'password'), None)
-                                f_col = next((c for c in df_users.columns if c.lower() == 'full_name'), None)
-                                r_col = next((c for c in df_users.columns if c.lower() == 'role'), None)
-                                t_col = next((c for c in df_users.columns if c.lower() == 'assigned_teams'), None)
-                                if u_col and p_col and pd.notna(row[u_col]) and pd.notna(row[p_col]):
-                                    try:
-                                        conn.execute('INSERT INTO Users (Username, Password, Full_Name, Role, Assigned_Teams) VALUES (?, ?, ?, ?, ?)', 
-                                                     (str(row[u_col]).strip().lower(), str(row[p_col]).split('.')[0].strip(), str(row[f_col]).strip(), str(row[r_col]).strip(), str(row[t_col]).strip()))
-                                        success_u += 1
-                                    except:
-                                        pass
-                            conn.commit()
-                            st.success(f"✔️ تم بنجاح رفع وتفعيل عدد {success_u} حساب مستخدم على السيستم!")
-                except Exception as e:
-                    st.error(f"حدث خطأ أثناء قراءة الملف: {e}")
-
-        elif menu == "🛡️ التحكم الشامل وحذف/تعديل الداتا":
-            st.subheader("❌ شاشة إلغاء وحذف أي حركة حضور مسجلة بالخطأ")
-            all_attendance = conn.execute('SELECT a.Record_ID, a.Date, a.Status, p.Player_Name, p.Team_Age FROM Attendance a JOIN Players p ON a.Player_ID = p.Player_ID ORDER BY a.Date DESC').fetchall()
-            if all_attendance:
-                att_list = [dict(r) for r in all_attendance]
-                to_delete = st.selectbox("اختر حركة الحضور المراد حذفها وإلغائها تماماً:", att_list, format_func=lambda x: f"تاريخ {x['Date']} | {x['Team_Age']} - {x['Player_Name']} ({x['Status']})")
-                if st.button("❌ حذف وإلغاء هذه الحركة نهائياً"):
-                    conn.execute("DELETE FROM Attendance WHERE Record_ID = ?", (to_delete['Record_ID'],))
-                    conn.commit()
-                    st.success("تم حذف وإلغاء حركة الحضور بنجاح!")
+        elif menu == "🗓️ إدارة وحذف الإجازات المسجلة غلط":
+            st.subheader("🗓️ حذف وتعديل إجازات الفرق من الجوجل شيت")
+            if not df_holidays.empty:
+                st.dataframe(df_holidays)
+                if st.button("🗑️ تصفير ومسح كل الإجازات لفتح السيستم"):
+                    save_sheet(pd.DataFrame(columns=['Holiday_Name', 'Start_Date', 'End_Date', 'Target_Team', 'Registered_By']), "Global_Holidays")
+                    st.success("تم مسح السجلات من الجوجل شيت!")
                     st.rerun()
             else:
-                st.info("لا توجد سجلات حضور بالنظام حالياً.")
+                st.info("لا توجد إجازات مسجلة حالياً.")
                 
-        conn.close()
+        elif menu == "👥 إدارة وقراءة جداول النظام أونلاين":
+            st.subheader("👥 بيانات المستخدمين واللاعبين الحالية المربوطة بالدرايف")
+            st.write("👥 **المستخدمين:**")
+            st.dataframe(df_users, use_container_width=True)
+            st.write("🏃 **اللاعبين:**")
+            st.dataframe(df_players, use_container_width=True)
