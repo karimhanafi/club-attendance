@@ -6,7 +6,7 @@ import datetime
 # =========================================================================
 # 🔗 ضَع رابط ملف الجوجل شيت الخاص بك هنا بين علامتي التنصيص بالملي:
 # =========================================================================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/ضع_هنا_رقم_الملف_الخاص_بك/edit?usp=sharing"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1_kD3rKqxntVGGMNEPwT8vsx2ylyiq05rm1wUh1lqOYQ/edit?usp=sharing"
 
 # دالة سحرية لتحويل رابط الشيت العادي إلى رابط تحميل مباشر بصيغة Excel لكود بايثون
 def get_excel_url(url, sheet_name):
