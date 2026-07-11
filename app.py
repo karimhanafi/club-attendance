@@ -4,7 +4,7 @@ from datetime import date
 import datetime
 
 # =========================================================================
-# 🔗 ضَع رابط ملف الجوجل شيت الخاص بك هنا بالملي (تأكد أنه Anyone with link)
+# 🔗 رابط ملف الجوجل شيت الخاص بك (تأكد أنه Anyone with link)
 # =========================================================================
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1_kD3rKqxntVGGMNEPwT8vsx2ylyiq05rm1wUh1lqOYQ/edit?usp=sharing"
 
@@ -14,38 +14,21 @@ def get_excel_url(url, sheet_name):
 
 st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
 
-@st.cache_data(ttl="10s")  # تحديث البيانات تلقائياً من السحاب كل 10 ثوانٍ
-def load_club_data():
+# جعل القراءة مقتصرة داخل دالة تُستدعى عند الحاجة فقط لمنع الـ Crash
+def load_sheet_safely(sheet_name):
     try:
-        players_url = get_excel_url(SHEET_URL, "Players")
-        users_url = get_excel_url(SHEET_URL, "Users")
-        
-        df_p = pd.read_excel(players_url)
-        df_u = pd.read_excel(users_url)
-        
-        df_p.columns = [str(c).strip().lower() for c in df_p.columns]
-        df_u.columns = [str(c).strip().lower() for c in df_u.columns]
-        return df_p, df_u, None
-    except Exception as e:
-        return pd.DataFrame(), pd.DataFrame(), e
-
-df_players, df_users, error_msg = load_club_data()
-
-# تأمين الحساب الافتراضي للطوارئ بحقوق SuperAdmin كاملة لو الشيت لسه مقراش
-if df_users.empty or 'username' not in df_users.columns or 'password' not in df_users.columns:
-    df_users = pd.DataFrame([{
-        "username": "admin", 
-        "password": "123", 
-        "full_name": "مدير النظام الرئيسي (كابتن كريم)", 
-        "role": "SuperAdmin", 
-        "assigned_teams": "الكل"
-    }])
+        url = get_excel_url(SHEET_URL, sheet_name)
+        df = pd.read_excel(url)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        return df
+    except:
+        return pd.DataFrame()
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user = None
 
-# --- شاشة تسجيل الدخول ---
+# --- شاشة تسجيل الدخول (تعتمد على داتا ثابتة للطوارئ لضمان فتح السيرفر أولاً) ---
 if not st.session_state.logged_in:
     st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
     st.write("---")
@@ -54,14 +37,27 @@ if not st.session_state.logged_in:
         st.subheader("🔑 تسجيل الدخول")
         username_input = st.text_input("اسم المستخدم").strip().lower()
         password_input = st.text_input("كلمة المرور", type="password").strip()
+        
         if st.button("دخول", use_container_width=True):
-            user_check = df_users[(df_users['username'].astype(str) == username_input) & (df_users['password'].astype(str) == password_input)]
-            if not user_check.empty:
+            # أولاً: الحساب الاحترافي الرئيسي لكابتن كريم (SuperAdmin) جاهز دائماً في الذاكرة لمنع أي خطأ
+            if username_input == "admin" and password_input == "123":
                 st.session_state.logged_in = True
-                st.session_state.user = user_check.iloc[0].to_dict()
+                st.session_state.user = {"username": "admin", "full_name": "مدير النظام (كابتن كريم)", "role": "SuperAdmin", "assigned_teams": "الكل"}
                 st.rerun()
             else:
-                st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
+                # ثانياً: لو مش الأدمن، يروح يسحب جدول المستخدمين من الجوجل شيت بشكل آمن تماماً
+                with st.spinner("جاري التحقق من الحساب سحابياً..."):
+                    df_users = load_sheet_safely("Users")
+                    if not df_users.empty and 'username' in df_users.columns and 'password' in df_users.columns:
+                        user_check = df_users[(df_users['username'].astype(str) == username_input) & (df_users['password'].astype(str) == password_input)]
+                        if not user_check.empty:
+                            st.session_state.logged_in = True
+                            st.session_state.user = user_check.iloc[0].to_dict()
+                            st.rerun()
+                        else:
+                            st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
+                    else:
+                        st.error("اسم المستخدم غير صحيح أو هناك مشكلة في الاتصال بشيت Users حالياً.")
 else:
     user = st.session_state.user
     st.sidebar.title(f"👋 {user.get('full_name', 'مستخدم النادي')}")
@@ -79,6 +75,9 @@ else:
         st.header("📋 شاشة المدرب لتسجيل الحضور اليومي")
         st.info(f"📅 تاريخ اليوم التلقائي: {today_str}")
         
+        with st.spinner("جاري تحميل أسماء اللاعبين من الجوجل شيت..."):
+            df_players = load_sheet_safely("Players")
+            
         teams_allowed = [t.strip() for t in str(user.get('assigned_teams', '')).split(",") if t.strip()]
         
         if not teams_allowed or df_players.empty:
@@ -130,15 +129,22 @@ else:
         
         if menu == "📊 عرض التقارير الختامية ونسب الحضور":
             st.subheader("📊 نسب الحضور التراكمية للموسم من واقع الجوجل شيت")
-            st.info("التقارير والإحصائيات مؤمنة بالكامل على حسابك في جوجل درايف.")
-            # هنا يقرأ داتا الحضور والغياب التراكمية
             st.write("📈 كشف الحساب التراكمي جاهز ومحدّث تلقائياً.")
             
         elif menu == "👥 إدارة حسابات المستخدمين والكلمات السرية":
             st.subheader("👥 الحسابات الحالية للمدربين والإداريين على السيستم:")
-            st.dataframe(df_users, use_container_width=True)
-            st.write("💡 يمكنك تعديل أو إضافة أي كابتن أو إداري مباشرة من ملف الجوجل شيت (صفحة Users) وسيقوم السيستم بتحديثهم فوراً.")
+            with st.spinner("جاري سحب كشف المستخدمين حالياً..."):
+                df_users_sa = load_sheet_safely("Users")
+            if not df_users_sa.empty:
+                st.dataframe(df_users_sa, use_container_width=True)
+            else:
+                st.info("جدول المستخدمين في الجوجل شيت فارغ حالياً.")
             
         elif menu == "🏃 إدارة وقراءة كشوفات اللاعبين من السحاب":
-            st.subheader("🏃 كشف الـ 500 لاعب الفعلي المقروء حالياً من Google Sheets:")
-            st.dataframe(df_players, use_container_width=True)
+            st.subheader("🏃 كشف اللاعبين الفعلي المقروء حالياً من Google Sheets:")
+            with st.spinner("جاري سحب كشف الـ 500 لاعب من السحاب..."):
+                df_players_sa = load_sheet_safely("Players")
+            if not df_players_sa.empty:
+                st.dataframe(df_players_sa, use_container_width=True)
+            else:
+                st.info("جدول اللاعبين في الجوجل شيت فارغ حالياً.")
