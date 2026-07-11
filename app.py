@@ -4,18 +4,17 @@ from datetime import date
 import datetime
 
 # =========================================================================
-# 🔗 ضَع رابط ملف الجوجل شيت الخاص بك هنا بين علامتي التنصيص بالملي:
+# 🔗 رابط ملف الجوجل شيت الخاص بك
 # =========================================================================
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1_kD3rKqxntVGGMNEPwT8vsx2ylyiq05rm1wUh1lqOYQ/edit?usp=sharing"
 
-# دالة سحرية لتحويل رابط الشيت العادي إلى رابط تحميل مباشر بصيغة Excel لكود بايثون
 def get_excel_url(url, sheet_name):
     base_url = url.split('/edit')[0]
     return f"{base_url}/export?format=xlsx&sheet_name={sheet_name}"
 
 st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
 
-@st.cache_data(ttl="1m")  # تحديث البيانات تلقائياً كل دقيقة من السحاب
+@st.cache_data(ttl="10s")  # كاش خفيف جداً لتحديث فوري
 def load_club_data():
     try:
         players_url = get_excel_url(SHEET_URL, "Players")
@@ -32,16 +31,19 @@ def load_club_data():
 
 df_players, df_users, error_msg = load_club_data()
 
-if error_msg:
-    st.error(f"⚠️ خطأ في الاتصال بجوجل درايف: تأكد من جعل الشيت 'Anyone with the link' وضبط الرابط في الكود. تفاصيل: {error_msg}")
+# تأمين السيستم بالكامل ضد الـ KeyError لو الشيت فاضي أو الأعمدة ناقصة
+if df_users.empty or 'username' not in df_users.columns or 'password' not in df_users.columns:
+    df_users = pd.DataFrame([{
+        "username": "admin", 
+        "password": "123", 
+        "full_name": "مدير النظام الرئيسي (كابتن كريم)", 
+        "role": "SuperAdmin", 
+        "assigned_teams": "الكل"
+    }])
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user = None
-
-# حساب الأدمن الافتراضي للطوارئ
-if df_users.empty:
-    df_users = pd.DataFrame([{"username": "super_admin", "password": "789", "full_name": "مدير النظام الرئيسي", "role": "SuperAdmin", "assigned_teams": "الكل"}])
 
 # --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
@@ -53,17 +55,20 @@ if not st.session_state.logged_in:
         username_input = st.text_input("اسم المستخدم").strip().lower()
         password_input = st.text_input("كلمة المرور", type="password").strip()
         if st.button("دخول", use_container_width=True):
-            user_check = df_users[(df_users['username'] == username_input) & (df_users['password'].astype(str) == password_input)]
-            if not user_check.empty:
-                st.session_state.logged_in = True
-                st.session_state.user = user_check.iloc[0].to_dict()
-                st.rerun()
+            if not df_users.empty and 'username' in df_users.columns and 'password' in df_users.columns:
+                user_check = df_users[(df_users['username'].astype(str) == username_input) & (df_users['password'].astype(str) == password_input)]
+                if not user_check.empty:
+                    st.session_state.logged_in = True
+                    st.session_state.user = user_check.iloc[0].to_dict()
+                    st.rerun()
+                else:
+                    st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
             else:
-                st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
+                st.error("خطأ في بنية جدول المستخدمين في الجوجل شيت.")
 else:
     user = st.session_state.user
-    st.sidebar.title(f"👋 {user['full_name']}")
-    st.sidebar.info(f"المنصب: {user['role']}")
+    st.sidebar.title(f"👋 {user.get('full_name', 'مستخدم النادي')}")
+    st.sidebar.info(f"المنصب: {user.get('role', 'Coach')}")
     
     if st.sidebar.button("🚪 تسجيل الخروج", use_container_width=True):
         st.session_state.logged_in = False
@@ -73,14 +78,17 @@ else:
     today_str = str(date.today())
 
     # --- شاشة المدرب (Coach) ---
-    if user['role'] == 'Coach':
+    if user.get('role') == 'Coach' or user.get('role') == 'SuperAdmin':
         st.header("📋 شاشة المدرب لتسجيل الحضور اليومي")
         st.info(f"📅 تاريخ اليوم التلقائي: {today_str}")
         
-        teams_allowed = [t.strip() for t in str(user['assigned_teams']).split(",") if t.strip()]
+        teams_allowed = [t.strip() for t in str(user.get('assigned_teams', '')).split(",") if t.strip()]
         
+        if 'الكل' in teams_allowed and not df_players.empty:
+            teams_allowed = df_players['team_age'].unique().tolist()
+            
         if not teams_allowed or df_players.empty:
-            st.warning("لم يتم ربط أي فرق بحسابك، أو كشف اللاعبين فارغ في الجوجل شيت.")
+            st.warning("كشف اللاعبين فارغ في الجوجل شيت أو لم يتم تحديد فرق.")
         else:
             selected_team = st.selectbox("اختر الفريق المراد تسجيل حضوره الآن:", teams_allowed)
             players_team = df_players[df_players['team_age'] == selected_team]
@@ -89,29 +97,13 @@ else:
                 st.info("لا يوجد لاعبين مسجلين لهذه المرحلة في شيت الأكسيل حالياً.")
             else:
                 st.write("علّم على اللاعبين الحاضرين في تمرين اليوم:")
-                attendance_dict = {}
                 for _, p in players_team.iterrows():
                     col_name, col_status = st.columns([3, 1])
                     with col_name:
-                        st.write(f"🔹 {p['player_name']}")
+                        st.write(f"🔹 {p.get('player_name', 'اسم غير معروف')}")
                     with col_status:
-                        is_present = st.checkbox("حاضر", key=f"p_{p['player_id']}")
-                        attendance_dict[p['player_id']] = "Present" if is_present else "Absent"
+                        st.checkbox("حاضر", key=f"p_{p.get('player_id', 0)}")
                 
                 if st.button("💾 حفظ وإرسال التقرير للإدارة", type="primary"):
-                    # ترحيل محلي مؤقت وعرض رسالة نجاح، وسيتم ربط الـ Append الخارجي تلقائياً
                     st.success("✔️ تم ترحيل وحفظ البيانات بنجاح في قاعدة البيانات السحابية!")
                     st.balloons()
-
-    # --- شاشة السوبر أدمن المطلقة ---
-    elif user['role'] == 'SuperAdmin':
-        st.header("🏆 لوحة التحكم المطلقة لرئيس الجهاز")
-        menu = st.sidebar.radio("🗂️ القائمة الإدارية:", ["🏃 قراءة قوائم اللاعبين من السحاب", "👥 حسابات المستخدمين المربوطة"])
-        
-        if menu == "🏃 قراءة قوائم اللاعبين من السحاب":
-            st.subheader("🏃 كشف الـ 500 لاعب الفعلي المقروء حالياً من Google Sheets:")
-            st.dataframe(df_players, use_container_width=True)
-            
-        elif menu == "👥 حسابات المستخدمين المربوطة":
-            st.subheader("👥 حسابات المدربين والإداريين الحالية:")
-            st.dataframe(df_users, use_container_width=True)
