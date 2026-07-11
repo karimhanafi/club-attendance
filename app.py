@@ -14,7 +14,7 @@ def get_excel_url(url, sheet_name):
 
 st.set_page_config(page_title="نظام الإدارة الشامل لفرق النادي", layout="wide")
 
-# جعل القراءة مقتصرة داخل دالة تُستدعى عند الحاجة فقط لمنع الـ Crash
+# دالة القراءة الآمنة من السحاب
 def load_sheet_safely(sheet_name):
     try:
         url = get_excel_url(SHEET_URL, sheet_name)
@@ -28,7 +28,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user = None
 
-# --- شاشة تسجيل الدخول (تعتمد على داتا ثابتة للطوارئ لضمان فتح السيرفر أولاً) ---
+# --- شاشة تسجيل الدخول ---
 if not st.session_state.logged_in:
     st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>⚽ نظام الإدارة والمتابعة الذكي لفرق النادي</h2>", unsafe_allow_html=True)
     st.write("---")
@@ -39,13 +39,12 @@ if not st.session_state.logged_in:
         password_input = st.text_input("كلمة المرور", type="password").strip()
         
         if st.button("دخول", use_container_width=True):
-            # أولاً: الحساب الاحترافي الرئيسي لكابتن كريم (SuperAdmin) جاهز دائماً في الذاكرة لمنع أي خطأ
+            # الحساب الرئيسي لكابتن كريم (SuperAdmin) للطوارئ والأمان أولاً
             if username_input == "admin" and password_input == "123":
                 st.session_state.logged_in = True
                 st.session_state.user = {"username": "admin", "full_name": "مدير النظام (كابتن كريم)", "role": "SuperAdmin", "assigned_teams": "الكل"}
                 st.rerun()
             else:
-                # ثانياً: لو مش الأدمن، يروح يسحب جدول المستخدمين من الجوجل شيت بشكل آمن تماماً
                 with st.spinner("جاري التحقق من الحساب سحابياً..."):
                     df_users = load_sheet_safely("Users")
                     if not df_users.empty and 'username' in df_users.columns and 'password' in df_users.columns:
@@ -134,11 +133,11 @@ else:
         elif menu == "👥 إدارة حسابات المستخدمين والكلمات السرية":
             st.subheader("👥 الحسابات الحالية للمدربين والإداريين على السيستم:")
             with st.spinner("جاري سحب كشف المستخدمين حالياً..."):
-                df_users_sa = load_sheet_safely("Users")
+                df_users_sa = load_sheet_safely("Users") # تم التصحيح لتقرأ جدول المستخدمين وليس اللاعبين
             if not df_users_sa.empty:
                 st.dataframe(df_users_sa, use_container_width=True)
             else:
-                st.info("جدول المستخدمين في الجوجل شيت فارغ حالياً.")
+                st.info("جدول المستخدمين في الجوجل شيت فارغ أو غير موجود حالياً.")
             
         elif menu == "🏃 إدارة وقراءة كشوفات اللاعبين من السحاب":
             st.subheader("🏃 كشف اللاعبين الفعلي المقروء حالياً من Google Sheets:")
